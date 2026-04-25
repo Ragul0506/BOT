@@ -1,0 +1,49 @@
+services:
+  - type: web
+    name: grocery-telegram-bot
+    runtime: python
+    region: singapore          # closest to India; change if needed
+    plan: free
+
+    buildCommand: >
+      apt-get install -y
+        ffmpeg
+        libgl1-mesa-glx
+        libglib2.0-0
+        tesseract-ocr
+        tesseract-ocr-tam
+      && pip install -r requirements.txt
+      && python download_fonts.py
+
+    startCommand: python main.py
+
+    healthCheckPath: /         # aiohttp serves GET / → "OK"
+
+    envVars:
+      # ── Telegram ────────────────────────────────────────────────────────────
+      - key: BOT_TOKEN
+        sync: false
+      # ── Groq (Whisper + LLM) ────────────────────────────────────────────────
+      - key: GROQ_API_KEY
+        sync: false
+      # ── TMDB ────────────────────────────────────────────────────────────────
+      - key: TMDB_API_KEY
+        sync: false
+      # ── Google Custom Search ─────────────────────────────────────────────────
+      - key: GOOGLE_API_KEY
+        sync: false
+      - key: GOOGLE_CSE_ID
+        sync: false
+      # ── Google Sheets (expense tracker) ─────────────────────────────────────
+      - key: GOOGLE_SHEETS_CREDENTIALS_JSON
+        sync: false            # paste full service-account JSON as a single string
+      - key: GOOGLE_SHEET_ID
+        sync: false            # spreadsheet ID from URL
+      # ── Supabase (watchlist) ─────────────────────────────────────────────────
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_KEY
+        sync: false
+      # ── Runtime ──────────────────────────────────────────────────────────────
+      - key: PYTHON_VERSION
+        value: "3.11.0"
