@@ -15,6 +15,9 @@ from utils.security import wrap_user_input
 
 logger = logging.getLogger(__name__)
 
+# Env-var override so decommissioned models can be swapped without code changes.
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
+
 _client: AsyncGroq | None = None
 
 
@@ -32,14 +35,14 @@ async def groq_complete(
     system: str,
     user: str,
     *,
-    model: str = "llama3-8b-8192",
+    model: str = "",
     temperature: float = 0.3,
     max_tokens: int = 1024,
 ) -> str:
     """Single-turn LLM call; returns the assistant content string."""
     client = _get_client()
     resp = await client.chat.completions.create(
-        model=model,
+        model=model or GROQ_MODEL,
         messages=[
             {"role": "system", "content": system},
             {"role": "user", "content": user},

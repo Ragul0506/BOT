@@ -40,15 +40,59 @@ def bill_history_available() -> bool:
 
 
 def _get_gc():
-    """Return an authenticated gspread client (sync; call inside executor)."""
+    """Return an authenticated gspread client (sync; call inside executor).
+
+    Raises RuntimeError with a descriptive message on any credential problem
+    so the async callers can catch it and degrade gracefully.
+    """
     global _creds_cache
     import gspread
     from google.oauth2.service_account import Credentials
 
     if _creds_cache is None:
-        _creds_cache = json.loads(os.environ["GOOGLE_SHEETS_CREDENTIALS_JSON"])
-    creds = Credentials.from_service_account_info(_creds_cache, scopes=_SCOPES)
-    return gspread.authorize(creds)
+        raw = os.environ.get("GOOGLE_SHEETS_CREDENTIALS_JSON", "").strip()
+        if not raw:
+            raise RuntimeError("GOOGLE_SHEETS_CREDENTIALS_JSON is not set")
+
+        # Accept both the JSON content directly and a file path.
+        if raw.startswith("{"):
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                raise RuntimeError(
+                    f"GOOGLE_SHEETS_CREDENTIALS_JSON is not valid JSON: {exc}"
+                ) from exc
+        else:
+            try:
+                with open(raw) as fh:
+                    parsed = json.load(fh)
+            except (OSError, json.JSONDecodeError) as exc:
+                raise RuntimeError(
+                    f"Cannot read service account credentials from '{raw}': {exc}"
+                ) from exc
+
+        if not isinstance(parsed, dict):
+            raise RuntimeError(
+                "Service account credentials must be a JSON object (got "
+                f"{type(parsed).__name__})"
+            )
+
+        required = {"token_uri", "client_email", "private_key"}
+        missing = required - set(parsed.keys())
+        if missing:
+            raise RuntimeError(
+                f"Service account JSON missing required fields: {missing}. "
+                "Ensure GOOGLE_SHEETS_CREDENTIALS_JSON contains the full "
+                "service-account key file content, not just a file path."
+            )
+
+        _creds_cache = parsed
+
+    try:
+        creds = Credentials.from_service_account_info(_creds_cache, scopes=_SCOPES)
+        return gspread.authorize(creds)
+    except Exception as exc:
+        raise RuntimeError(f"Failed to authorize Google Sheets client: {exc}") from exc
 
 
 def _tab_name(user_id: str) -> str:

@@ -54,7 +54,8 @@ async def _start(update: Update, context) -> None:
         "   <code>/expense spent 500 petrol</code> — log expense\n"
         "   <code>/summary</code> — monthly PDF report\n\n"
         "🎵 <b>YouTube MP3:</b>\n"
-        "   <code>/ytmp3 &lt;url&gt;</code> or paste a YouTube link\n\n"
+        "   <code>/ytmp3 &lt;url&gt;</code> or paste a YouTube link\n"
+        "   <code>/uploadcookies</code> — fix bot-detection errors\n\n"
         "📸 <b>Bill Photo:</b> Send a receipt photo → PDF\n\n"
         "📋 <b>Bill History:</b>\n"
         "   <code>/billhistory</code> — today's bills\n"
@@ -167,7 +168,11 @@ def _register_handlers(app: Application) -> None:
     from handlers.summarize_handler import handle_summarize
     from handlers.voice_handler import handle_voice
     from handlers.watchlist_handler import handle_watchlist_callback, handle_watchlist_command
-    from handlers.ytmp3_handler import handle_yt_url_message, handle_ytmp3_command
+    from handlers.ytmp3_handler import (
+        handle_uploadcookies_command,
+        handle_yt_url_message,
+        handle_ytmp3_command,
+    )
     from utils.ytdl_audio import YT_URL_RE
 
     # ── commands ──────────────────────────────────────────────────────────────
@@ -179,7 +184,8 @@ def _register_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("watchlist",    handle_watchlist_command))
     app.add_handler(CommandHandler("expense",      handle_expense_command))
     app.add_handler(CommandHandler("summary",      handle_summary_command))
-    app.add_handler(CommandHandler("ytmp3",        handle_ytmp3_command))
+    app.add_handler(CommandHandler("ytmp3",         handle_ytmp3_command))
+    app.add_handler(CommandHandler("uploadcookies", handle_uploadcookies_command))
     app.add_handler(CommandHandler("summarize",    handle_summarize))
     app.add_handler(CommandHandler("billhistory",  handle_billhistory_command))
 

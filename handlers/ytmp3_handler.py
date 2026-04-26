@@ -3,6 +3,7 @@
 Triggers:
   /ytmp3 <url>           — explicit command
   Any message containing a YouTube URL — auto-detect
+  /uploadcookies         — upload a Netscape-format cookies .txt file
 """
 from __future__ import annotations
 
@@ -46,7 +47,7 @@ async def _send_audio(update: Update, url: str) -> None:
     result: AudioResult | None = None
     try:
         await status.edit_text(m("ytmp3_converting", lang))
-        result = await download_audio(url)
+        result = await download_audio(url, user_id=uid)
 
         await status.edit_text(
             m("ytmp3_sending", lang, title=hl.escape(result.title[:50])),
@@ -135,3 +136,77 @@ async def handle_yt_url_message(
     url = extract_yt_url(text)
     if url:
         await _send_audio(update, url)
+
+
+async def handle_uploadcookies_command(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """/uploadcookies — save a Netscape-format .txt cookies file for yt-dlp.
+
+    Usage:
+      Send the .txt file as a document with caption /uploadcookies
+      — or — send /uploadcookies as text to get instructions.
+    """
+    msg = update.effective_message
+    uid = update.effective_user.id
+    lang = await get_user_lang(uid)
+
+    doc = msg.document if msg else None
+
+    if doc is None:
+        # No document attached — show instructions.
+        if lang == "en":
+            text = (
+                "📎 <b>How to upload YouTube cookies:</b>\n\n"
+                "1. Install the <i>Get cookies.txt LOCALLY</i> browser extension\n"
+                "2. Log in to <b>youtube.com</b>\n"
+                "3. Click the extension → Export → save as <code>.txt</code>\n"
+                "4. Send that <code>.txt</code> file here with caption "
+                "<code>/uploadcookies</code>\n\n"
+                "This lets the bot bypass YouTube's bot-detection for you."
+            )
+        else:
+            text = (
+                "📎 <b>YouTube cookies எப்படி upload பண்றது:</b>\n\n"
+                "1. <i>Get cookies.txt LOCALLY</i> browser extension install பண்ணுங்க\n"
+                "2. <b>youtube.com</b>-ல் login பண்ணுங்க\n"
+                "3. Extension click பண்ணி → Export → <code>.txt</code>-ஆ save பண்ணுங்க\n"
+                "4. அந்த <code>.txt</code> file-ஐ caption "
+                "<code>/uploadcookies</code>-ஆ இங்க அனுப்புங்க\n\n"
+                "இதனால் YouTube bot-detection bypass பண்ண முடியும்."
+            )
+        await msg.reply_text(text, parse_mode="HTML")
+        return
+
+    # Validate file type by name and MIME type.
+    fname = doc.file_name or ""
+    mime = doc.mime_type or ""
+    if not fname.lower().endswith(".txt") and "text" not in mime:
+        err = (
+            "❌ Please send a <code>.txt</code> cookies file (Netscape format)."
+            if lang == "en"
+            else "❌ <code>.txt</code> format cookies file மட்டுமே அனுப்புங்க."
+        )
+        await msg.reply_text(err, parse_mode="HTML")
+        return
+
+    # Download and persist the file.
+    try:
+        tg_file = await doc.get_file()
+        cookie_path = f"/tmp/cookies_{uid}.txt"
+        await tg_file.download_to_drive(cookie_path)
+        logger.info("Cookies saved for user %s → %s (%d bytes)", uid, cookie_path, doc.file_size or 0)
+        reply = (
+            "✅ Cookies saved! YouTube downloads will now use your account cookies."
+            if lang == "en"
+            else "✅ Cookies சேமிக்கப்பட்டது! இனி YouTube downloads உங்க cookies use பண்ணும்."
+        )
+        await msg.reply_text(reply)
+    except Exception as exc:
+        logger.error("Failed to save cookies for user %s: %s", uid, exc, exc_info=True)
+        err = (
+            "❌ Failed to save cookies file. Please try again."
+            if lang == "en"
+            else "❌ Cookies save பண்ண முடியலை. மீண்டும் try பண்ணுங்க."
+        )
+        await msg.reply_text(err)

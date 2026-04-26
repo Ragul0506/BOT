@@ -33,6 +33,12 @@ async def search_streaming_links(movie_name: str, num: int = 5) -> list[dict]:
                 _CSE_ENDPOINT,
                 params={"key": api_key, "cx": cse_id, "q": query, "num": num},
             ) as resp:
+                if resp.status == 403:
+                    logger.warning(
+                        "Google CSE 403 Forbidden — API key may be restricted, "
+                        "quota exceeded, or Custom Search API not enabled."
+                    )
+                    return []
                 resp.raise_for_status()
                 data = await resp.json()
 
@@ -46,6 +52,12 @@ async def search_streaming_links(movie_name: str, num: int = 5) -> list[dict]:
             if item.get("link", "").startswith("http")
         ]
 
+    except aiohttp.ClientResponseError as exc:
+        if exc.status == 403:
+            logger.warning("Google CSE 403 Forbidden: %s", exc)
+        else:
+            logger.error("Google CSE HTTP error %s: %s", exc.status, exc)
+        return []
     except Exception as exc:
         logger.error("Google CSE error: %s", exc)
         return []

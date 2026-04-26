@@ -43,9 +43,16 @@ YT_URL_RE = re.compile(
 # ── error categories & user messages ─────────────────────────────────────────
 
 CATEGORY_MSGS: dict[str, str] = {
+    "bot_check": (
+        "❌ YouTube bot verification தேவைப்படுகிறது.\n"
+        "<i>Cookies இல்லாமல் download பண்ண முடியாது.</i>\n\n"
+        "💡 Fix: YouTube-ல் login பண்ணி cookies export பண்ணி "
+        "<code>/uploadcookies</code> command-ல் அனுப்புங்க."
+    ),
     "age_restricted": (
         "❌ இந்த வீடியோவை download பண்ண முடியாது.\n"
         "<i>Age-restricted — YouTube login தேவைப்படுகிறது.</i>\n\n"
+        "💡 Fix: <code>/uploadcookies</code> command-ல் cookies அனுப்புங்க.\n"
         "வேற video try பண்ணுங்க."
     ),
     "private": (
@@ -79,9 +86,16 @@ CATEGORY_MSGS: dict[str, str] = {
 }
 
 CATEGORY_MSGS_EN: dict[str, str] = {
+    "bot_check": (
+        "❌ YouTube requires bot verification.\n"
+        "<i>Cannot download without login cookies.</i>\n\n"
+        "💡 Fix: Log in to YouTube, export cookies, then send the file using "
+        "<code>/uploadcookies</code>."
+    ),
     "age_restricted": (
         "❌ Cannot download this video.\n"
         "<i>Age-restricted — YouTube login required.</i>\n\n"
+        "💡 Fix: Use <code>/uploadcookies</code> to upload your YouTube cookies.\n"
         "Please try a different video."
     ),
     "private": (
@@ -157,6 +171,9 @@ class _YTDLLogger:
 
 def _categorize(exc_msg: str, log_msgs: list[str]) -> str:
     combined = (exc_msg + " " + " ".join(log_msgs)).lower()
+    # Bot-detection check must come before the generic "sign in" age check.
+    if any(k in combined for k in ("not a bot", "confirm you're not", "confirm you are not")):
+        return "bot_check"
     if any(k in combined for k in ("age", "sign in", "confirm your age", "age-restricted", "18+")):
         return "age_restricted"
     if "private video" in combined:
@@ -205,10 +222,25 @@ _COOKIE_ERR_HINTS = (
 _DEFINITIVE_FAIL_HINTS = ("private video", "copyright")
 
 
-def _sync_download(url: str, out_dir: str) -> AudioResult:
+_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0.0.0 Safari/537.36"
+)
+
+
+def _sync_download(url: str, out_dir: str, user_id: int | None = None) -> AudioResult:
     import yt_dlp  # type: ignore[import]
 
     ytdl_log = _YTDLLogger()
+
+    # Check for a user-uploaded Netscape cookies file.
+    cookie_path: str | None = None
+    if user_id is not None:
+        candidate = f"/tmp/cookies_{user_id}.txt"
+        if os.path.isfile(candidate):
+            cookie_path = candidate
+            logger.info("Using uploaded cookies file for user %s", user_id)
 
     def _opts(**extra) -> dict:
         """Build a complete ydl_opts dict, merging any *extra* keys last."""
@@ -230,21 +262,32 @@ def _sync_download(url: str, out_dir: str) -> AudioResult:
             "retries": 3,
             "logger": ytdl_log,
             "quiet": True,
+            "http_headers": {"User-Agent": _UA},
             # tv_embedded client is not subject to YouTube's age-gate enforcement
             "extractor_args": {"youtube": {"player_client": ["tv_embedded", "web"]}},
             **extra,
         }
 
     # Three strategies, tried in order.  Each tuple is (label, opts).
-    attempts = [
-        # 1. Chrome cookies give access to age-restricted and login-gated videos.
-        #    Skipped automatically if Chrome is not installed / profile unreadable.
-        ("chrome-cookies+embedded", _opts(cookiesfrombrowser=("chrome",))),
-        # 2. No cookies — works in headless / Docker environments.
-        ("embedded-only",           _opts()),
-        # 3. Force the generic extractor as a last resort for non-standard URLs.
-        ("generic-extractor",       _opts(force_generic_extractor=True)),
-    ]
+    if cookie_path:
+        attempts = [
+            # 1. User-uploaded cookies file (highest priority when available).
+            ("user-cookies",      _opts(cookiefile=cookie_path)),
+            # 2. No cookies fallback.
+            ("embedded-only",     _opts()),
+            # 3. Generic extractor last resort.
+            ("generic-extractor", _opts(force_generic_extractor=True)),
+        ]
+    else:
+        attempts = [
+            # 1. Chrome cookies give access to age-restricted and login-gated videos.
+            #    Skipped automatically if Chrome is not installed / profile unreadable.
+            ("chrome-cookies+embedded", _opts(cookiesfrombrowser=("chrome",))),
+            # 2. No cookies — works in headless / Docker environments.
+            ("embedded-only",           _opts()),
+            # 3. Force the generic extractor as a last resort for non-standard URLs.
+            ("generic-extractor",       _opts(force_generic_extractor=True)),
+        ]
 
     info = None
     last_exc: Exception | None = None
@@ -326,8 +369,13 @@ def _sync_download(url: str, out_dir: str) -> AudioResult:
 # ── async public API ──────────────────────────────────────────────────────────
 
 
-async def download_audio(url: str) -> AudioResult:
+async def download_audio(url: str, user_id: int | None = None) -> AudioResult:
     """Download audio from *url*, convert to MP3, return AudioResult.
+
+    Args:
+        url:     YouTube (or other) URL to download.
+        user_id: Telegram user ID; if set, checks /tmp/cookies_{user_id}.txt
+                 for a Netscape-format cookies file uploaded via /uploadcookies.
 
     Raises:
         YTDLCategoryError: with .category in CATEGORY_MSGS keys
@@ -336,7 +384,9 @@ async def download_audio(url: str) -> AudioResult:
     out_dir = tempfile.mkdtemp(prefix="ytdl_")
     loop = asyncio.get_running_loop()
     try:
-        return await loop.run_in_executor(None, _sync_download, url, out_dir)
+        return await loop.run_in_executor(
+            None, _sync_download, url, out_dir, user_id
+        )
     except Exception:
         shutil.rmtree(out_dir, ignore_errors=True)
         raise
