@@ -1,5 +1,6 @@
 """Groq LLM – all inference helpers (bill parsing, intent classification,
-expense extraction, summarization, language detection, bill type classification)."""
+expense extraction, summarization, language detection, bill type classification,
+service detail extraction)."""
 from __future__ import annotations
 
 import json
@@ -210,7 +211,10 @@ async def parse_items(transcript: str) -> list[dict]:
             logger.debug("parse_items: skipping %r — non-numeric qty/rate", item_name)
             continue
         if qty > _MAX_VALID_QTY:
-            logger.warning("parse_items: skipping %r — qty %.0f exceeds %d", item_name, qty, _MAX_VALID_QTY)
+            logger.warning(
+                "parse_items: skipping %r — qty %.0f exceeds %d",
+                item_name, qty, _MAX_VALID_QTY,
+            )
             continue
         validated.append({"item": item_name, "qty": qty, "rate": rate})
 
@@ -278,6 +282,87 @@ async def classify_bill_type(text: str) -> Literal["grocery", "service", "other"
     return word if word in ("grocery", "service") else "other"  # type: ignore[return-value]
 
 
+# ── service detail extraction ─────────────────────────────────────────────────
+
+_SERVICE_DETAILS_SYSTEM = """\
+Extract customer details, financial fields, and service items from a service bill transcript.
+The transcript may be in Tamil, English, or Tanglish.
+
+Output ONLY a valid JSON object (no markdown fences, no extra text) with these exact fields:
+  - "customer_name"   : customer's name as a string (empty string "" if not mentioned)
+  - "customer_mobile" : customer's phone/mobile number as a string (empty string "" if not found)
+  - "services"        : array of {"item": str, "qty": number, "rate": number}
+  - "discount_amount" : discount in rupees as a number (0 if not mentioned); if a percentage
+                        is given (e.g. "10% discount"), set this to 0 and set discount_percent
+  - "discount_percent": discount as a percentage number (0 if not mentioned)
+  - "gst_percent"     : GST percentage as a number (0 if not mentioned; e.g. "GST 18%" → 18)
+  - "advance"         : advance amount paid in rupees as a number (0 if not mentioned)
+
+Rules:
+  • A name typically appears after "for", "customer", or before/after a mobile number.
+  • A mobile number is a 10-digit number starting with 6-9 (Indian mobile format).
+  • qty defaults to 1 for services if not stated.
+  • Translate service names to English Title Case.
+  • "discount 100 rupees" → discount_amount=100, discount_percent=0
+  • "10% discount" → discount_amount=0, discount_percent=10
+  • "GST 18%" → gst_percent=18
+  • "advance 500" or "paid 500 advance" → advance=500
+
+Examples:
+
+Input: "Haircut 200 for Ragu, 9876543210, GST 18%"
+Output: {"customer_name":"Ragu","customer_mobile":"9876543210","services":[{"item":"Haircut","qty":1,"rate":200}],"discount_amount":0,"discount_percent":0,"gst_percent":18,"advance":0}
+
+Input: "facial 500 threading 50, discount 100 rupees, advance 200"
+Output: {"customer_name":"","customer_mobile":"","services":[{"item":"Facial","qty":1,"rate":500},{"item":"Threading","qty":1,"rate":50}],"discount_amount":100,"discount_percent":0,"gst_percent":0,"advance":200}
+
+Input: "Kavitha 9845123456 blouse stitching 150, saree fall 50, 10% discount, GST 5"
+Output: {"customer_name":"Kavitha","customer_mobile":"9845123456","services":[{"item":"Blouse Stitching","qty":1,"rate":150},{"item":"Saree Fall","qty":1,"rate":50}],"discount_amount":0,"discount_percent":10,"gst_percent":5,"advance":0}
+
+Input: "customer Meena mobile 9900112233 haircut 250 colour 800"
+Output: {"customer_name":"Meena","customer_mobile":"9900112233","services":[{"item":"Haircut","qty":1,"rate":250},{"item":"Hair Color","qty":1,"rate":800}],"discount_amount":0,"discount_percent":0,"gst_percent":0,"advance":0}
+"""
+
+
+async def extract_service_details(transcript: str) -> dict:
+    """Extract customer name, mobile, service items, discount, GST, and advance.
+
+    Returns:
+        {
+          'customer_name': str, 'customer_mobile': str,
+          'services': list[dict],
+          'discount_amount': float, 'discount_percent': float,
+          'gst_percent': float, 'advance': float,
+        }
+    """
+    raw = await groq_complete(
+        _SERVICE_DETAILS_SYSTEM,
+        wrap_user_input(transcript, max_len=600),
+        temperature=0.1,
+        max_tokens=600,
+    )
+    logger.info("extract_service_details raw: %s", raw[:200])
+    cleaned = re.sub(r"```(?:json)?", "", raw).replace("```", "").strip()
+    try:
+        obj = json.loads(cleaned)
+        return {
+            "customer_name":    str(obj.get("customer_name") or ""),
+            "customer_mobile":  str(obj.get("customer_mobile") or ""),
+            "services":         [i for i in obj.get("services", []) if isinstance(i, dict)],
+            "discount_amount":  float(obj.get("discount_amount") or 0),
+            "discount_percent": float(obj.get("discount_percent") or 0),
+            "gst_percent":      float(obj.get("gst_percent") or 0),
+            "advance":          float(obj.get("advance") or 0),
+        }
+    except (json.JSONDecodeError, AttributeError, TypeError, ValueError) as exc:
+        logger.warning("extract_service_details parse error: %s", exc)
+        return {
+            "customer_name": "", "customer_mobile": "", "services": [],
+            "discount_amount": 0.0, "discount_percent": 0.0,
+            "gst_percent": 0.0, "advance": 0.0,
+        }
+
+
 # ── expense parsing ───────────────────────────────────────────────────────────
 
 _EXPENSE_SYSTEM_TPL = """\
@@ -304,6 +389,10 @@ CATEGORY MAPPING (use the most specific match):
   personal    : girlfriend, boyfriend, wife, husband, friend, self, beauty, salon, haircut, cosmetics, gift (for non-family)
   family      : mother, father, mom, dad, amma, appa, parents, brother, sister, son, daughter, child, kids, home, family
   general     : everything else
+
+IMPORTANT — relationship keyword rules:
+  "girlfriend", "boyfriend", "wife", "husband", "friend", "self" → category = "personal"
+  "mother", "father", "mom", "dad", "amma", "appa", "brother", "sister", "son", "daughter", "child", "kids" → category = "family"
 
 PATTERN RECOGNITION:
   "AMOUNT for ITEM"       → ITEM is the note, map to best category
@@ -370,10 +459,10 @@ async def parse_expenses(text: str, today: str = "") -> list[dict]:
         try:
             validated.append(
                 {
-                    "date": str(item.get("date", today)),
-                    "amount": float(item.get("amount", 0)),
+                    "date":     str(item.get("date", today)),
+                    "amount":   float(item.get("amount", 0)),
                     "category": str(item.get("category", "general")),
-                    "note": str(item.get("note", "")),
+                    "note":     str(item.get("note", "")),
                 }
             )
         except (TypeError, ValueError):

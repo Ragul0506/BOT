@@ -11,12 +11,6 @@ for messages that contain HTML tags.
 """
 from __future__ import annotations
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Message registry
-# Each key maps to {'ta': <tanglish>, 'en': <english>}.
-# Use {placeholder} syntax for dynamic values.
-# ─────────────────────────────────────────────────────────────────────────────
-
 _T: dict[str, dict[str, str]] = {
 
     # ── generic ───────────────────────────────────────────────────────────────
@@ -95,8 +89,8 @@ _T: dict[str, dict[str, str]] = {
         "en": "Here is your bill! Total &#8377; {total:.0f}.",
     },
     "voice_service_bill_done": {
-        "ta": "&#128136; <b>{shop}</b> Service Invoice!\nRoll No: <b>{roll}</b> | மொத்தம் &#8377; {total:.0f}.",
-        "en": "&#128136; <b>{shop}</b> Service Invoice!\nRoll No: <b>{roll}</b> | Total &#8377; {total:.0f}.",
+        "ta": "&#128136; <b>{shop}</b> Service Invoice!\nRoll No: <b>{roll}</b> | Net &#8377; {total:.2f}.",
+        "en": "&#128136; <b>{shop}</b> Service Invoice!\nRoll No: <b>{roll}</b> | Net &#8377; {total:.2f}.",
     },
     "voice_too_large": {
         "ta": "❌ Audio file too large (max 20 MB). சின்னதா record பண்ணுங்க.",
@@ -114,8 +108,8 @@ _T: dict[str, dict[str, str]] = {
         "en": "❌ Photo too large (max 10 MB). Please compress and resend.",
     },
     "photo_ocr_running": {
-        "ta": "🔍 Text extract பண்றேன் (OCR)…",
-        "en": "🔍 Extracting text (OCR)…",
+        "ta": "🔍 Text extract பண்றேன் (OCR + preprocessing)…",
+        "en": "🔍 Extracting text (OCR with preprocessing)…",
     },
     "photo_ocr_fail": {
         "ta": (
@@ -156,8 +150,8 @@ _T: dict[str, dict[str, str]] = {
         "en": "Here is your bill (from photo). Total &#8377; {total:.0f}.",
     },
     "photo_service_bill_done": {
-        "ta": "&#128136; <b>{shop}</b> Invoice (photo-ல் இருந்து)!\nRoll No: <b>{roll}</b> | மொத்தம் &#8377; {total:.0f}.",
-        "en": "&#128136; <b>{shop}</b> Invoice (from photo)!\nRoll No: <b>{roll}</b> | Total &#8377; {total:.0f}.",
+        "ta": "&#128136; <b>{shop}</b> Invoice (photo-ல் இருந்து)!\nRoll No: <b>{roll}</b> | Net &#8377; {total:.2f}.",
+        "en": "&#128136; <b>{shop}</b> Invoice (from photo)!\nRoll No: <b>{roll}</b> | Net &#8377; {total:.2f}.",
     },
     "photo_pdf_gen": {
         "ta": "📄 {count} items found. PDF தயாரிக்கிறேன்…",
@@ -373,6 +367,280 @@ _T: dict[str, dict[str, str]] = {
     "billhistory_no_bills": {
         "ta": "இந்த நாளில் bills இல்லை.",
         "en": "No bills found for this date.",
+    },
+
+    # ── shop management (/setshop — 8 steps) ─────────────────────────────────
+
+    "setshop_ask_name": {
+        "ta": (
+            "🏪 <b>Shop Profile Setup</b>\n\n"
+            "Step 1/8: உங்க <b>Shop பெயர்</b> என்ன?\n"
+            "<i>Example: Sri Narpavi Beauty Parlour</i>\n\n"
+            "Cancel பண்ண /cancel அனுப்புங்க."
+        ),
+        "en": (
+            "🏪 <b>Shop Profile Setup</b>\n\n"
+            "Step 1/8: What is your <b>shop name</b>?\n"
+            "<i>Example: Sri Narpavi Beauty Parlour</i>\n\n"
+            "Send /cancel to abort."
+        ),
+    },
+    "setshop_name_invalid": {
+        "ta": "❌ Shop பெயர் valid-ஆ இல்ல. குறைந்தது 2 characters இருக்கணும். மீண்டும் try பண்ணுங்க.",
+        "en": "❌ Invalid shop name. Must be at least 2 characters. Try again.",
+    },
+    "setshop_ask_address": {
+        "ta": (
+            "Step 2/8: <b>Address</b> என்ன?\n"
+            "<i>Example: No. 12, Anna Salai, Chennai - 600002</i>\n"
+            "Skip பண்ண <code>skip</code> அனுப்புங்க."
+        ),
+        "en": (
+            "Step 2/8: What is the <b>shop address</b>?\n"
+            "<i>Example: No. 12, Anna Salai, Chennai - 600002</i>\n"
+            "Send <code>skip</code> to skip."
+        ),
+    },
+    "setshop_ask_phone": {
+        "ta": (
+            "Step 3/8: <b>Phone number</b> என்ன?\n"
+            "<i>Example: 9876543210</i>\n"
+            "Skip பண்ண <code>skip</code> அனுப்புங்க."
+        ),
+        "en": (
+            "Step 3/8: What is the <b>phone number</b>?\n"
+            "<i>Example: 9876543210</i>\n"
+            "Send <code>skip</code> to skip."
+        ),
+    },
+    "setshop_ask_gst_pct": {
+        "ta": (
+            "Step 4/8: Default <b>GST percentage</b> என்ன? (Optional)\n"
+            "<i>Example: 18 (for 18%)</i>\n"
+            "GST இல்லை என்றால் <code>skip</code> அனுப்புங்க."
+        ),
+        "en": (
+            "Step 4/8: What is the default <b>GST percentage</b>? (Optional)\n"
+            "<i>Example: 18 (for 18%)</i>\n"
+            "Send <code>skip</code> if no GST."
+        ),
+    },
+    "setshop_ask_discount_pct": {
+        "ta": (
+            "Step 5/8: Default <b>Discount percentage</b> என்ன? (Optional)\n"
+            "<i>Example: 5 (for 5% member discount)</i>\n"
+            "Discount இல்லை என்றால் <code>skip</code> அனுப்புங்க."
+        ),
+        "en": (
+            "Step 5/8: What is the default <b>discount percentage</b>? (Optional)\n"
+            "<i>Example: 5 (for 5% member discount)</i>\n"
+            "Send <code>skip</code> if no default discount."
+        ),
+    },
+    "setshop_ask_gst": {
+        "ta": (
+            "Step 6/8: <b>GST Registration Number</b> என்ன? (Optional)\n"
+            "<i>Example: 33AABCU9603R1ZM</i>\n"
+            "Skip பண்ண <code>skip</code> அனுப்புங்க."
+        ),
+        "en": (
+            "Step 6/8: What is your <b>GST registration number</b>? (Optional)\n"
+            "<i>Example: 33AABCU9603R1ZM</i>\n"
+            "Send <code>skip</code> to skip."
+        ),
+    },
+    "setshop_ask_footer": {
+        "ta": (
+            "Step 7/8: Invoice-ல் காட்டணும் <b>Footer message</b> என்ன?\n"
+            "<i>Example: Thank you for your visit! Please come again.</i>\n"
+            "Default பண்ண <code>skip</code> அனுப்புங்க."
+        ),
+        "en": (
+            "Step 7/8: What <b>footer message</b> should appear on invoices?\n"
+            "<i>Example: Thank you for your visit! Please come again.</i>\n"
+            "Send <code>skip</code> for default."
+        ),
+    },
+    "setshop_ask_logo": {
+        "ta": (
+            "✅ கிட்டத்தட்ட முடிஞ்சுடுச்சு! (Step 8/8)\n\n"
+            "உங்க shop-ஓட <b>Logo photo</b> அனுப்புங்க (optional).\n"
+            "Logo வேண்டாம் என்றால் <code>skip</code> அனுப்புங்க."
+        ),
+        "en": (
+            "✅ Almost done! (Step 8/8)\n\n"
+            "Send your <b>shop logo</b> as a photo (optional).\n"
+            "Send <code>skip</code> if you don't have a logo."
+        ),
+    },
+    "setshop_done": {
+        "ta": (
+            "✅ <b>{shop}</b> shop profile save ஆச்சு!\n\n"
+            "இனி service voice note அனுப்பும்போது இந்த profile use ஆகும்.\n"
+            "📋 /listshops — உங்க shops பார்க்க\n"
+            "🏪 /setshop — புதுசா shop add பண்ண"
+        ),
+        "en": (
+            "✅ Shop profile <b>{shop}</b> saved!\n\n"
+            "This profile will be used for service invoices.\n"
+            "📋 /listshops — view your shops\n"
+            "🏪 /setshop — add another shop"
+        ),
+    },
+    "setshop_cancelled": {
+        "ta": "❌ Shop setup cancel ஆச்சு.",
+        "en": "❌ Shop setup cancelled.",
+    },
+    "listshops_empty": {
+        "ta": (
+            "🏪 Shop profiles இல்லை!\n\n"
+            "<code>/setshop</code> command use பண்ணி உங்க shop profile create பண்ணுங்க."
+        ),
+        "en": (
+            "🏪 No shop profiles found!\n\n"
+            "Use <code>/setshop</code> to create your shop profile."
+        ),
+    },
+    "listshops_header": {
+        "ta": "🏪 <b>உங்க Shops:</b>\n",
+        "en": "🏪 <b>Your Shops:</b>\n",
+    },
+    "shop_default_set": {
+        "ta": "⭐ <b>{shop}</b> default shop-ஆ set ஆச்சு!",
+        "en": "⭐ <b>{shop}</b> is now your default shop!",
+    },
+    "shop_select_prompt": {
+        "ta": (
+            "🏪 உங்களுக்கு multiple shops இருக்கு.\n"
+            "இந்த service bill-க்கு எந்த shop use பண்ணணும்?"
+        ),
+        "en": (
+            "🏪 You have multiple shop profiles.\n"
+            "Which shop should be used for this service bill?"
+        ),
+    },
+    "shop_bill_expired": {
+        "ta": "❌ Bill data expire ஆச்சு. மீண்டும் voice note அனுப்புங்க.",
+        "en": "❌ Bill data expired. Please resend your voice note.",
+    },
+
+    # ── /servicebill manual command ───────────────────────────────────────────
+
+    "servicebill_start": {
+        "ta": (
+            "🧾 <b>Service Bill Generator</b>\n\n"
+            "Step-by-step invoice உருவாக்குவோம்.\n"
+            "எந்த step-லயும் /skip அனுப்பலாம். Cancel-க்கு /cancel."
+        ),
+        "en": (
+            "🧾 <b>Service Bill Generator</b>\n\n"
+            "Let's create your invoice step by step.\n"
+            "Send /skip for any step. /cancel to abort."
+        ),
+    },
+    "servicebill_no_shop": {
+        "ta": (
+            "⚠️ Shop profile இல்லை!\n\n"
+            "<code>/setshop</code> command use பண்ணி shop create பண்ணுங்க.\n"
+            "அல்லது default shop name use ஆகும்."
+        ),
+        "en": (
+            "⚠️ No shop profile found!\n\n"
+            "Use <code>/setshop</code> to create a shop profile.\n"
+            "A default shop name will be used for now."
+        ),
+    },
+    "servicebill_ask_customer": {
+        "ta": (
+            "Step 1/5: <b>Customer பெயரும் Mobile-உம்</b> சொல்லுங்க.\n"
+            "<i>Example: Ramesh 9876543210</i>\n"
+            "Skip: <code>/skip</code>"
+        ),
+        "en": (
+            "Step 1/5: Enter <b>customer name and mobile</b>.\n"
+            "<i>Example: Ramesh 9876543210</i>\n"
+            "Send <code>/skip</code> to skip."
+        ),
+    },
+    "servicebill_ask_services": {
+        "ta": (
+            "Step 2/5: <b>Services மற்றும் rates</b> சொல்லுங்க.\n"
+            "<i>Example: Haircut 200, Facial 500, Waxing 300</i>\n"
+            "Skip: <code>/skip</code>"
+        ),
+        "en": (
+            "Step 2/5: Enter <b>services and their rates</b>.\n"
+            "<i>Example: Haircut 200, Facial 500, Waxing 300</i>\n"
+            "Send <code>/skip</code> to skip."
+        ),
+    },
+    "servicebill_ask_discount": {
+        "ta": (
+            "Step 3/5: <b>Discount</b> இருக்கா?\n"
+            "<i>Amount: 100 | Percentage: 10%</i>\n"
+            "Discount இல்லை என்றால் <code>/skip</code>."
+        ),
+        "en": (
+            "Step 3/5: Any <b>discount</b>?\n"
+            "<i>Amount: 100 | Percentage: 10%</i>\n"
+            "Send <code>/skip</code> if no discount."
+        ),
+    },
+    "servicebill_ask_gst": {
+        "ta": (
+            "Step 4/5: <b>GST percentage</b> என்ன?\n"
+            "<i>Example: 18 (for 18%)</i>\n"
+            "GST இல்லை என்றால் <code>/skip</code>."
+        ),
+        "en": (
+            "Step 4/5: What is the <b>GST percentage</b>?\n"
+            "<i>Example: 18 (for 18%)</i>\n"
+            "Send <code>/skip</code> if no GST."
+        ),
+    },
+    "servicebill_ask_advance": {
+        "ta": (
+            "Step 5/5: <b>Advance</b> எவ்வளவு கட்டினாங்க?\n"
+            "<i>Example: 500</i>\n"
+            "Advance இல்லை என்றால் <code>/skip</code>."
+        ),
+        "en": (
+            "Step 5/5: How much <b>advance</b> was paid?\n"
+            "<i>Example: 500</i>\n"
+            "Send <code>/skip</code> if no advance."
+        ),
+    },
+    "servicebill_generating": {
+        "ta": "📄 Invoice PDF தயாரிக்கிறேன்…",
+        "en": "📄 Generating invoice PDF…",
+    },
+    "servicebill_no_items": {
+        "ta": (
+            "❌ Services parse ஆகவில்லை.\n\n"
+            "Format: <i>Service name Rate</i>\n"
+            "Example: <i>Haircut 200, Facial 500</i>"
+        ),
+        "en": (
+            "❌ Could not parse services.\n\n"
+            "Format: <i>Service name Rate</i>\n"
+            "Example: <i>Haircut 200, Facial 500</i>"
+        ),
+    },
+    "servicebill_done": {
+        "ta": (
+            "✅ <b>{shop}</b> Invoice!\n"
+            "Roll No: <b>{roll}</b>\n"
+            "Net Amount: &#8377; {net:.2f}"
+        ),
+        "en": (
+            "✅ <b>{shop}</b> Invoice!\n"
+            "Roll No: <b>{roll}</b>\n"
+            "Net Amount: &#8377; {net:.2f}"
+        ),
+    },
+    "servicebill_cancelled": {
+        "ta": "❌ Service bill cancel ஆச்சு.",
+        "en": "❌ Service bill generation cancelled.",
     },
 }
 

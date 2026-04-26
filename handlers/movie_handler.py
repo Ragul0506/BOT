@@ -1,6 +1,9 @@
 """Movie search handler — TMDB (with trailer, cast, genres) + Google CSE
 + watchlist add button + inline keyboard.
 
+Geo-block note: if a YouTube full-movie URL is found, a region-lock warning
+is appended to the caption automatically.
+
 Multi-user isolation: watchlist add uses the calling user's ID.
 """
 from __future__ import annotations
@@ -22,7 +25,12 @@ from utils.youtube_search import search_full_movie, youtube_api_configured
 
 logger = logging.getLogger(__name__)
 
-_CAPTION_MAX = 1020  # Telegram photo caption byte limit
+_CAPTION_MAX = 1020  # Telegram photo caption byte limit (leave 4 bytes spare)
+
+_GEO_NOTE = (
+    "\n\n🌍 <i>YouTube movie may be region-locked. "
+    "Use a VPN if the video is unavailable in your country.</i>"
+)
 
 
 def _build_caption(movie: dict, links: list[dict], lang: str) -> str:
@@ -50,8 +58,7 @@ def _build_caption(movie: dict, links: list[dict], lang: str) -> str:
     lines += ["", overview]
 
     if links:
-        header = "🔗 <b>Legal Streams:</b>" if lang == "en" else "🔗 <b>Legal Streams:</b>"
-        lines += ["", header]
+        lines += ["", "🔗 <b>Legal Streams:</b>"]
         for lnk in links[:3]:
             try:
                 domain = lnk["link"].split("/")[2]
@@ -66,7 +73,8 @@ def _build_caption(movie: dict, links: list[dict], lang: str) -> str:
 
 
 def _build_keyboard(movie: dict, yt_full_url: str | None = None) -> InlineKeyboardMarkup:
-    """Build inline keyboard with TMDB, Streams, Trailer, Watchlist, and optional YT Full Movie buttons."""
+    """Build inline keyboard with TMDB, Streams, Trailer, Watchlist, and optional
+    YouTube Full Movie buttons."""
     row1: list[InlineKeyboardButton] = []
 
     title = movie.get("title", "")
@@ -106,7 +114,6 @@ async def _send_movie(update: Update, movie_name: str) -> None:
     uid = update.effective_user.id
     lang = await get_user_lang(uid)
 
-    # [C4] Rate limit movie lookups.
     if not rate_limiter.is_allowed(uid):
         await msg.reply_text(m("rate_limit", lang))
         return
@@ -126,7 +133,6 @@ async def _send_movie(update: Update, movie_name: str) -> None:
             )
             return
 
-        # Fetch streaming links and YouTube full movie URL concurrently.
         yt_full_url: str | None = None
         if youtube_api_configured():
             loop = asyncio.get_event_loop()
@@ -140,6 +146,14 @@ async def _send_movie(update: Update, movie_name: str) -> None:
             links = await search_streaming_links(movie["title"])
 
         caption = _build_caption(movie, links, lang)
+
+        # ── Geo-block note: append if YouTube full-movie URL was found ─────────
+        if yt_full_url:
+            candidate = caption + _GEO_NOTE
+            if len(candidate.encode()) <= _CAPTION_MAX:
+                caption = candidate
+            # If caption is already near the byte limit the note is silently
+            # omitted — the button itself is still present in the keyboard.
 
         try:
             keyboard = _build_keyboard(movie, yt_full_url=yt_full_url)
@@ -163,7 +177,6 @@ async def _send_movie(update: Update, movie_name: str) -> None:
                 )
                 return
             except Exception as exc:
-                # Poster URL invalid or Telegram rejected it — fall through to text.
                 logger.warning("reply_photo failed for '%s': %s — using text", movie_name, exc)
 
         await msg.reply_text(caption, reply_markup=keyboard, parse_mode="HTML")
@@ -171,13 +184,12 @@ async def _send_movie(update: Update, movie_name: str) -> None:
     except Exception as exc:
         logger.error("Movie handler error for '%s' (user %s): %s", movie_name, uid, exc, exc_info=True)
         try:
-            # [H2] Never expose raw exception to users.
             await status.edit_text(m("movie_fail", lang))
         except Exception:
             pass
 
 
-# ── quick-add watchlist from movie card (wl_add callback) ────────────────────
+# ── watchlist quick-add callback ──────────────────────────────────────────────
 
 
 async def handle_movie_watchlist_callback(
@@ -199,7 +211,6 @@ async def handle_movie_watchlist_callback(
     uid = update.effective_user.id
 
     try:
-        # [M1] Use TMDB authoritative title rather than callback_data (could be truncated).
         results = await search_movies_multi(title, n=1)
         if results:
             authoritative_title = results[0].get("title", title)
@@ -214,11 +225,10 @@ async def handle_movie_watchlist_callback(
         )
     except Exception as exc:
         logger.error("wl_add callback error for user %s: %s", uid, exc)
-        # [H2] Do not expose exception details in callback answer.
         await query.answer("❌ Watchlist-ல் add பண்ண முடியல! மீண்டும் try பண்ணுங்க.", show_alert=True)
 
 
-# ── PTB handler entry-points ──────────────────────────────────────────────────
+# ── PTB entry-points ──────────────────────────────────────────────────────────
 
 
 async def handle_movie_command(
@@ -228,17 +238,11 @@ async def handle_movie_command(
     if not context.args:
         uid = update.effective_user.id
         lang = await get_user_lang(uid)
-        if lang == "en":
-            usage = (
-                "Usage: <code>/movie &lt;movie name&gt;</code>\n"
-                "Example: <code>/movie Vikram</code>"
-            )
-        else:
-            usage = (
-                "Usage: <code>/movie &lt;movie name&gt;</code>\n"
-                "Example: <code>/movie Vikram</code>"
-            )
-        await update.message.reply_text(usage, parse_mode="HTML")
+        await update.message.reply_text(
+            "Usage: <code>/movie &lt;movie name&gt;</code>\n"
+            "Example: <code>/movie Vikram</code>",
+            parse_mode="HTML",
+        )
         return
     await _send_movie(update, " ".join(context.args))
 

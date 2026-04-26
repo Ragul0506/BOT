@@ -1,14 +1,13 @@
 """Photo → OCR → Groq LLM → PDF bill handler.
 
-When a user sends a photo of a receipt/bill:
-  1. Download the highest-resolution image.
-  2. Extract text via EasyOCR / pytesseract.
+Flow:
+  1. Download highest-resolution image.
+  2. extract_text_from_image() — grayscale + Otsu + pytesseract PSM-6 fallback.
   3. classify_bill_type() to detect grocery vs service.
-  4. Parse items with Groq LLM.
-  5. Generate appropriate PDF (grocery or service invoice).
-  6. Log the bill to Google Sheets bill history (if configured).
-
-All PDFs are generated in English.
+  4. parse_items() with Groq LLM.
+  5. Service bill: check shop profile, extract customer/GST/discount/advance.
+  6. Generate appropriate PDF (grocery or professional service invoice).
+  7. Log the bill to bill history (if configured).
 """
 from __future__ import annotations
 
@@ -19,12 +18,12 @@ import os
 import tempfile
 from datetime import datetime
 
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
 from utils.bill_history import bill_history_available, log_bill
 from utils.easyocr_text import extract_text_from_image
-from utils.groq_llm import classify_bill_type, parse_items
+from utils.groq_llm import classify_bill_type, extract_service_details, parse_items
 from utils.lang_store import get_user_lang
 from utils.msgs import m
 from utils.pdf_generator import (
@@ -33,6 +32,7 @@ from utils.pdf_generator import (
     next_service_roll_number,
 )
 from utils.security import rate_limiter
+from utils.shop_profile import list_shops
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +44,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     uid = update.effective_user.id
     lang = await get_user_lang(uid)
 
-    # [C4] Enforce rate limit before any processing.
     if not rate_limiter.is_allowed(uid):
         await msg.reply_text(m("rate_limit", lang))
         return
@@ -56,10 +55,9 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     try:
         # ── 1. Download highest-res photo ─────────────────────────────────────
-        photo = msg.photo[-1]  # last = largest
+        photo = msg.photo[-1]
         file = await photo.get_file()
 
-        # [H4] Check file size before downloading.
         if file.file_size and file.file_size > _MAX_PHOTO_BYTES:
             await status.edit_text(m("photo_too_large", lang))
             return
@@ -69,7 +67,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await file.download_to_drive(image_path)
         logger.info("Photo saved: %s (%.1f KB)", image_path, os.path.getsize(image_path) / 1024)
 
-        # ── 2. OCR ────────────────────────────────────────────────────────────
+        # ── 2. OCR with preprocessing ─────────────────────────────────────────
         await status.edit_text(m("photo_ocr_running", lang))
         try:
             ocr_text = await extract_text_from_image(image_path)
@@ -86,9 +84,10 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             await status.edit_text(m("photo_ocr_fail", lang))
             return
 
-        # [H1] HTML-escape OCR output before embedding in HTML message.
         preview = hl.escape(ocr_text[:120] + ("…" if len(ocr_text) > 120 else ""))
-        await status.edit_text(m("photo_ocr_preview", lang, preview=preview), parse_mode="HTML")
+        await status.edit_text(
+            m("photo_ocr_preview", lang, preview=preview), parse_mode="HTML"
+        )
 
         # ── 3. Parse items + classify bill type in parallel ───────────────────
         try:
@@ -112,32 +111,131 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
         logger.info("Photo bill_type=%s items=%d", bill_type, len(items))
 
-        # ── 4. Generate PDF ───────────────────────────────────────────────────
-        await status.edit_text(m("photo_pdf_gen", lang, count=len(items)))
-        grand_total = sum(float(i.get("qty", 1)) * float(i.get("rate", 0)) for i in items)
+        basic_sales = sum(
+            float(i.get("qty", 1)) * float(i.get("rate", 0)) for i in items
+        )
 
+        await status.edit_text(m("photo_pdf_gen", lang, count=len(items)))
+
+        # ── 4. Service bill route ─────────────────────────────────────────────
         if bill_type == "service":
-            shop_name = os.environ.get("SERVICE_SHOP_NAME", "SRI NARPAVI BEAUTY PARLOUR")
+            svc_details = await extract_service_details(ocr_text)
             customer_name = (
-                update.effective_user.first_name
+                svc_details.get("customer_name")
+                or update.effective_user.first_name
                 or update.effective_user.full_name
                 or "Valued Customer"
             )
+            customer_mobile  = svc_details.get("customer_mobile", "")
+            voice_discount_a = float(svc_details.get("discount_amount", 0) or 0)
+            voice_discount_p = float(svc_details.get("discount_percent", 0) or 0)
+            voice_gst_pct    = float(svc_details.get("gst_percent", 0) or 0)
+            voice_advance    = float(svc_details.get("advance", 0) or 0)
+
+            shops = list_shops(uid)
+
+            if len(shops) == 0:
+                shop_name = os.environ.get(
+                    "SERVICE_SHOP_NAME", "SRI NARPAVI BEAUTY PARLOUR"
+                )
+                shop_data: dict = {}
+
+            elif len(shops) == 1:
+                shop_data = shops[0]
+                shop_name = shop_data["shop_name"]
+
+            else:
+                # Multiple shops: ask user to pick
+                context.user_data["pending_service_bill"] = {
+                    "items":            items,
+                    "customer_name":    customer_name,
+                    "customer_mobile":  customer_mobile,
+                    "discount_amount":  voice_discount_a,
+                    "discount_percent": voice_discount_p,
+                    "gst_percent":      voice_gst_pct,
+                    "advance":          voice_advance,
+                }
+                keyboard = [
+                    [InlineKeyboardButton(
+                        s["shop_name"][:30],
+                        callback_data=f"shop_select_bill:{s['id']}",
+                    )]
+                    for s in shops
+                ]
+                await status.edit_text(
+                    m("shop_select_prompt", lang),
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                    parse_mode="HTML",
+                )
+                return
+
+            # ── Merge OCR values with shop defaults ───────────────────────────
+            shop_gst_pct  = float(shop_data.get("gst_percent", 0) or 0)
+            shop_disc_pct = float(shop_data.get("discount_percent", 0) or 0)
+
+            gst_pct = voice_gst_pct or shop_gst_pct
+
+            discount_amount = voice_discount_a
+            if discount_amount <= 0 and voice_discount_p > 0:
+                discount_amount = round(basic_sales * voice_discount_p / 100, 2)
+            elif discount_amount <= 0 and shop_disc_pct > 0:
+                discount_amount = round(basic_sales * shop_disc_pct / 100, 2)
+
+            subtotal   = basic_sales - discount_amount
+            gst_amount = round(subtotal * gst_pct / 100, 2) if gst_pct > 0 else 0.0
+            net_amount = subtotal + gst_amount
+
+            # Download logo
+            logo_path_tmp: str | None = None
+            if shop_data.get("logo_file_id"):
+                try:
+                    logo_file = await context.bot.get_file(shop_data["logo_file_id"])
+                    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as t:
+                        logo_path_tmp = t.name
+                    await logo_file.download_to_drive(logo_path_tmp)
+                except Exception as exc:
+                    logger.warning("Logo download failed: %s", exc)
+                    logo_path_tmp = None
+
             now = datetime.now()
             roll_no = next_service_roll_number(shop_name, now)
-            pdf_path = generate_service_bill(
-                shop_name=shop_name,
-                customer_name=customer_name,
-                services=items,
-                bill_number=roll_no,
-                date_str=now.strftime("%d-%m-%Y"),
-                time_str=now.strftime("%H:%M"),
+            try:
+                pdf_path = generate_service_bill(
+                    shop_name=shop_name,
+                    shop_address=shop_data.get("address", ""),
+                    shop_phone=shop_data.get("phone", ""),
+                    shop_gst=shop_data.get("gst", ""),
+                    shop_discount_percent=shop_disc_pct,
+                    customer_name=customer_name,
+                    customer_mobile=customer_mobile,
+                    services=items,
+                    total=basic_sales,
+                    roll_number=roll_no,
+                    date_str=now.strftime("%d-%m-%Y"),
+                    time_str=now.strftime("%H:%M"),
+                    logo_path=logo_path_tmp,
+                    footer=shop_data.get("footer", ""),
+                    discount_amount=discount_amount,
+                    gst_percent=gst_pct,
+                    advance=voice_advance,
+                )
+            finally:
+                if logo_path_tmp and os.path.exists(logo_path_tmp):
+                    try:
+                        os.unlink(logo_path_tmp)
+                    except OSError:
+                        pass
+
+            caption = m(
+                "photo_service_bill_done", lang,
+                shop=hl.escape(shop_name),
+                roll=hl.escape(roll_no),
+                total=net_amount,
             )
-            caption = m("photo_service_bill_done", lang,
-                        shop=hl.escape(shop_name), roll=hl.escape(roll_no), total=grand_total)
+
         else:
             pdf_path = generate_grocery_bill(items, lang="en")
-            caption = m("photo_bill_done", lang, total=grand_total)
+            caption = m("photo_bill_done", lang, total=basic_sales)
 
         try:
             await status.delete()
@@ -152,10 +250,10 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 parse_mode="HTML",
             )
 
-        # ── 5. Log to bill history (non-blocking) ─────────────────────────────
+        # ── 5. Log to bill history ────────────────────────────────────────────
         if bill_history_available():
             pdf_file_id = sent.document.file_id if sent and sent.document else ""
-            bill_no = await log_bill(uid, items, grand_total, pdf_file_id)
+            bill_no = await log_bill(uid, items, basic_sales, pdf_file_id)
             if bill_no:
                 try:
                     await sent.reply_text(
@@ -168,7 +266,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     except Exception as exc:
         logger.error("Photo handler error for user %s: %s", uid, exc, exc_info=True)
         try:
-            # [H2] Never expose raw exception to users; log internally only.
             await status.edit_text(m("generic_error", lang))
         except Exception:
             pass

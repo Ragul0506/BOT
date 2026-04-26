@@ -34,7 +34,6 @@ BOT_TOKEN: str = os.environ["BOT_TOKEN"]
 WEBHOOK_BASE: str = os.environ.get("RENDER_EXTERNAL_URL", "").rstrip("/")
 PORT: int = int(os.environ.get("PORT", 8443))
 WEBHOOK_PATH = "/webhook"
-# Set WEBHOOK_SECRET in Render dashboard to prevent spoofed webhook requests.
 WEBHOOK_SECRET: str = os.environ.get("WEBHOOK_SECRET", "")
 
 
@@ -46,7 +45,12 @@ async def _start(update: Update, context) -> None:
         "வணக்கம்! 👋 <b>GroceryBot</b> — உங்க AI assistant!\n\n"
         "🎤 <b>Voice note அனுப்புங்க:</b>\n"
         "   • Bill: <i>'2 kg sugar 80, 1 oil 160'</i> → PDF bill\n"
-        "   • Expense: <i>'today spent 200 for chai'</i> → Google Sheets-ல் log\n\n"
+        "   • Expense: <i>'today spent 200 for chai'</i> → Google Sheets-ல் log\n"
+        "   • Service: <i>'Haircut 200 for Ragu, 9876543210'</i> → Invoice PDF\n\n"
+        "🏪 <b>Shop Profile (Service Bills):</b>\n"
+        "   <code>/setshop</code> — shop name, address, GST%, discount%, logo setup\n"
+        "   <code>/listshops</code> — உங்க shops பார்க்க\n"
+        "   <code>/servicebill</code> — manual step-by-step invoice builder\n\n"
         "🎬 <b>Movies:</b>\n"
         "   <code>/movie Vikram</code> — poster + trailer + cast + watchlist\n"
         "   <code>/watchlist add Master</code> — watchlist-ல் save\n\n"
@@ -56,7 +60,7 @@ async def _start(update: Update, context) -> None:
         "🎵 <b>YouTube MP3:</b>\n"
         "   <code>/ytmp3 &lt;url&gt;</code> or paste a YouTube link\n"
         "   <code>/uploadcookies</code> — fix bot-detection errors\n\n"
-        "📸 <b>Bill Photo:</b> Send a receipt photo → PDF\n\n"
+        "📸 <b>Bill Photo:</b> Send a receipt photo → PDF (handles handwritten bills)\n\n"
         "📋 <b>Bill History:</b>\n"
         "   <code>/billhistory</code> — today's bills\n"
         "   <code>/billhistory yesterday</code> — yesterday's bills\n\n"
@@ -103,8 +107,13 @@ async def _setup(update: Update, context) -> None:
         "• <b>Streaming links:</b> Set <code>GOOGLE_API_KEY</code> + <code>GOOGLE_CSE_ID</code>.",
         "• <b>Expenses + Bill history:</b> Set <code>GOOGLE_SHEETS_CREDENTIALS_JSON</code> + <code>GOOGLE_SHEET_ID</code>.",
         "• <b>YouTube Full Movie:</b> Set <code>YOUTUBE_API_KEY</code> (Google Cloud → YouTube Data API v3).",
-        "• <b>Service bill shop name:</b> Set <code>SERVICE_SHOP_NAME</code> (default: SRI NARPAVI BEAUTY PARLOUR).",
+        "• <b>Service bill (legacy):</b> Set <code>SERVICE_SHOP_NAME</code> if you don't use /setshop.",
         "• <b>Security:</b> Set <code>WEBHOOK_SECRET</code> to a random 32-char hex token.",
+        "",
+        "🌍 <b>YouTube geo-block tip:</b>",
+        "   If full-movie links are often blocked, change your Render service region to",
+        "   <b>Oregon (US)</b> in the Render dashboard → Settings → Region.",
+        "   Oregon has much wider YouTube content availability than Singapore.",
     ]
     await update.message.reply_text("\n".join(lines), parse_mode="HTML")
 
@@ -132,7 +141,6 @@ async def _language(update: Update, context) -> None:
 
 
 async def _language_callback(update: Update, context) -> None:
-    """Handles lang:ta / lang:en inline button callbacks."""
     query = update.callback_query
     await query.answer()
 
@@ -168,6 +176,12 @@ def _register_handlers(app: Application) -> None:
         handle_movie_watchlist_callback,
     )
     from handlers.photo_handler import handle_photo
+    from handlers.servicebill_handler import get_servicebill_conversation_handler
+    from handlers.shop_handler import (
+        get_shop_conversation_handler,
+        handle_listshops,
+        handle_shop_callback,
+    )
     from handlers.summarize_handler import handle_summarize
     from handlers.voice_handler import handle_voice
     from handlers.watchlist_handler import handle_watchlist_callback, handle_watchlist_command
@@ -177,6 +191,10 @@ def _register_handlers(app: Application) -> None:
         handle_ytmp3_command,
     )
     from utils.ytdl_audio import YT_URL_RE
+
+    # ── ConversationHandlers (must be registered before plain MessageHandlers) ─
+    app.add_handler(get_shop_conversation_handler())
+    app.add_handler(get_servicebill_conversation_handler())
 
     # ── commands ──────────────────────────────────────────────────────────────
     app.add_handler(CommandHandler("start",        _start))
@@ -191,6 +209,8 @@ def _register_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("uploadcookies", handle_uploadcookies_command))
     app.add_handler(CommandHandler("summarize",    handle_summarize))
     app.add_handler(CommandHandler("billhistory",  handle_billhistory_command))
+    app.add_handler(CommandHandler("listshops",    handle_listshops))
+    # /servicebill is handled by get_servicebill_conversation_handler() registered above
 
     # ── media ─────────────────────────────────────────────────────────────────
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
@@ -217,6 +237,8 @@ def _register_handlers(app: Application) -> None:
     app.add_handler(CallbackQueryHandler(handle_watchlist_callback,       pattern=r"^wl_rm:"))
     app.add_handler(CallbackQueryHandler(handle_movie_watchlist_callback, pattern=r"^wl_add:"))
     app.add_handler(CallbackQueryHandler(_language_callback,              pattern=r"^lang:"))
+    # Shop callbacks: shop_default:<id>  and  shop_select_bill:<id>
+    app.add_handler(CallbackQueryHandler(handle_shop_callback,            pattern=r"^shop_"))
 
 
 # ── webhook mode ──────────────────────────────────────────────────────────────
@@ -241,13 +263,10 @@ async def _run_webhook() -> None:
         return web.Response(text="OK")
 
     async def telegram_webhook(req: web.Request) -> web.Response:
-        # [C1] Validate Telegram's secret token to reject spoofed requests.
         if WEBHOOK_SECRET:
             provided = req.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
             if provided != WEBHOOK_SECRET:
-                logger.warning(
-                    "Webhook: rejected request with invalid secret from %s", req.remote
-                )
+                logger.warning("Webhook: rejected request from %s", req.remote)
                 return web.Response(status=403, text="Forbidden")
         try:
             payload = await req.json()
