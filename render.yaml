@@ -2,10 +2,11 @@ services:
   - type: web
     name: grocery-telegram-bot
     env: python
-    region: frankfurt  # or singapore
+    region: frankfurt
     plan: free
     buildCommand: |
-      apt-get update -y && apt-get install -y ffmpeg tesseract-ocr tesseract-ocr-tam
+      apt-get update -y  
+      apt-get install -y ffmpeg tesseract-ocr tesseract-ocr-tam
       pip install --no-cache-dir -r requirements.txt
       python download_fonts.py
     startCommand: python main.py
