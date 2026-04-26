@@ -1,5 +1,5 @@
 """Groq LLM – all inference helpers (bill parsing, intent classification,
-expense extraction, summarization)."""
+expense extraction, summarization, language detection)."""
 from __future__ import annotations
 
 import json
@@ -68,25 +68,88 @@ def _extract_json_array(raw: str) -> list[dict]:
         return []
 
 
-# ── bill parsing (Feature 1, unchanged) ──────────────────────────────────────
+# ── bill parsing ──────────────────────────────────────────────────────────────
 
 _BILL_SYSTEM = """\
-You are a billing assistant that parses shopping-list text into structured JSON.
-The input may be in Tamil, English, or Tanglish (Tamil words in English letters).
+You are a billing assistant that parses shopping-list transcripts into structured JSON.
+The input may be in Tamil (Unicode), English, or Tanglish (Tamil words spelled in English letters).
 
 OUTPUT RULES — follow exactly:
 1. Output ONLY a valid JSON array. No explanation, no markdown fences, no extra text.
 2. Each element must have exactly three fields:
-   - "item"  : product name in English (string)
-   - "qty"   : quantity as a plain number (integer or decimal, no units)
-   - "rate"  : price per unit in rupees as a plain number
+   - "item"  : product name translated to English (string, Title Case)
+   - "qty"   : quantity as a plain number (integer or decimal, NO units in this field)
+   - "rate"  : price per unit in rupees as a plain number (NO currency symbols)
 
-Common Tamil/Tanglish unit words to ignore (strip from qty):
-  kg, kilo, litre, ltr, ml, gram, pack, packs, packet, packets, piece, pieces,
-  nos, number, bottle, bottles, box, boxes
+UNIT WORDS TO STRIP from qty (do not include in the number):
+  kg, kilo, kilogram, litre, ltr, ml, gram, g, pack, packs, packet, packets,
+  piece, pieces, nos, number, bottle, bottles, box, boxes, dozen, set, bundle,
+  கிலோ, லிட்டர், கிராம், பாக்கெட், பாட்டில், டஜன்
 
-Example input : "2 kg sugar 80 rupees, 1 litre oil 160 rupees, 3 pack biscuit 90"
-Example output: [{"item":"Sugar","qty":2,"rate":80},{"item":"Oil","qty":1,"rate":160},{"item":"Biscuit","qty":3,"rate":90}]
+TANGLISH → ENGLISH TRANSLATIONS (common grocery items):
+  arisi / அரிசி → Rice
+  paruppu / பருப்பு → Dal / Lentils
+  thakkali / தக்காளி → Tomato
+  vengayam / வெங்காயம் → Onion
+  poondu / பூண்டு → Garlic
+  inji / இஞ்சி → Ginger
+  karuveppilai / கறிவேப்பிலை → Curry Leaves
+  kottamalli / கொத்தமல்லி → Coriander
+  milagai / மிளகாய் → Chilli
+  milagu / மிளகு → Pepper
+  jeeragam / சீரகம் → Cumin
+  manja / மஞ்சள் → Turmeric
+  uppu / உப்பு → Salt
+  sennai / சென்னை → Wheat Flour (Maida)
+  maida → Maida / All-purpose Flour
+  rava / ரவை → Semolina (Rava)
+  sooji → Semolina
+  oil / ennai / எண்ணெய் → Oil
+  soap / sabun → Soap
+  shampoo → Shampoo
+  biscuit / biscuit → Biscuit
+  bread → Bread
+  egg / muttai / முட்டை → Egg
+  chicken / kozhi / கோழி → Chicken
+  fish / meen / மீன் → Fish
+  milk / paal / பால் → Milk
+  curd / thayir / தயிர் → Curd / Yogurt
+  sugar / sakkarai / சக்கரை → Sugar
+  coffee → Coffee Powder
+  tea / theneer / தேநீர் → Tea / Tea Powder
+  detergent → Detergent
+  veggies / keerai / கீரை → Greens / Spinach
+  potato / urulai / உருளைக்கிழங்கு → Potato
+  banana / vazhai / வாழை → Banana
+  coconut / thengai / தெங்காய் → Coconut
+
+PRICE WORDS: rupees, rupe, rs, ரூபாய், ரூ, ₹, /-, per
+
+BRAND NAMES: Keep recognisable brand abbreviations as-is (RR, MDH, Aachi, Tata, Amul, etc.)
+
+FEW-SHOT EXAMPLES:
+
+Example 1 (Tanglish with units):
+Input: "2 kg arisi 80 rupees, 1 litre oil 160 rupees, 3 pack biscuit 90"
+Output: [{"item":"Rice","qty":2,"rate":80},{"item":"Oil","qty":1,"rate":160},{"item":"Biscuit","qty":3,"rate":90}]
+
+Example 2 (Tamil Unicode with mixed prices):
+Input: "2 கிலோ வெங்காயம் 40, அரை கிலோ தக்காளி 25, 1 லிட்டர் பால் 56 ரூபாய்"
+Output: [{"item":"Onion","qty":2,"rate":40},{"item":"Tomato","qty":0.5,"rate":25},{"item":"Milk","qty":1,"rate":56}]
+
+Example 3 (Mixed Tamil/English with brand name):
+Input: "2 சதங்கள் ஆர்ஆர் மசாலா 144, 500 gram paruppu 65 rupees, 1 packet Aachi sambar 45"
+Output: [{"item":"RR Masala","qty":2,"rate":144},{"item":"Dal","qty":500,"rate":65},{"item":"Aachi Sambar Powder","qty":1,"rate":45}]
+
+Example 4 (Quantities in different forms):
+Input: "half kg sugar 40, one dozen eggs 90, 2 bottles coconut oil 250 each"
+Output: [{"item":"Sugar","qty":0.5,"rate":40},{"item":"Egg","qty":12,"rate":90},{"item":"Coconut Oil","qty":2,"rate":250}]
+
+Example 5 (Tanglish voice note style):
+Input: "rendu kilo arisi thayir 80 le, onnu litre milk 56, moonnu packet biscuit 30 rubaa"
+Output: [{"item":"Rice","qty":2,"rate":80},{"item":"Milk","qty":1,"rate":56},{"item":"Biscuit","qty":3,"rate":30}]
+
+If a price cannot be determined, use 0. If quantity cannot be determined, use 1.
 """
 
 
@@ -96,8 +159,9 @@ async def parse_items(transcript: str) -> list[dict]:
         _BILL_SYSTEM,
         f"Parse this shopping list:\n{wrap_user_input(transcript)}",
         temperature=0.1,
+        max_tokens=1500,
     )
-    logger.info("parse_items raw: %s", raw[:200])
+    logger.info("parse_items raw: %s", raw[:300])
     result = _extract_json_array(raw)
     return [
         {
@@ -107,6 +171,24 @@ async def parse_items(transcript: str) -> list[dict]:
         }
         for i in result
     ]
+
+
+# ── language detection (script-based, no extra API call) ─────────────────────
+
+
+def detect_transcript_language(text: str) -> str:
+    """Return 'ta' if text contains significant Tamil Unicode, else 'en'.
+
+    Tamil Unicode block: U+0B80–U+0BFF.
+    If ≥10 % of alphabetic characters are Tamil script → language is Tamil.
+    Tanglish (Tamil words in English letters) defaults to 'ta' because
+    Whisper usually emits Tamil Unicode for Tamil speech.
+    """
+    tamil_chars = sum(1 for c in text if "஀" <= c <= "௿")
+    alpha_chars = sum(1 for c in text if c.isalpha())
+    if alpha_chars == 0:
+        return "ta"
+    return "ta" if (tamil_chars / alpha_chars) >= 0.10 else "en"
 
 
 # ── voice intent classification ───────────────────────────────────────────────

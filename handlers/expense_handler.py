@@ -7,6 +7,8 @@ Commands:
 
 Voice notes are also routed here by voice_handler when the LLM classifies
 the intent as "expense".
+
+Multi-user isolation: every Sheets call uses user_id as the worksheet tab name.
 """
 from __future__ import annotations
 
@@ -20,7 +22,9 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from utils.groq_llm import parse_expenses
+from utils.lang_store import get_user_lang
 from utils.matplotlib_chart import generate_expense_chart
+from utils.msgs import m
 from utils.pdf_generator import generate_expense_summary_pdf
 from utils.security import rate_limiter
 from utils.sheets_api import append_expenses, get_month_expenses, sheets_available
@@ -39,40 +43,39 @@ async def process_expense_text(
 ) -> None:
     """Parse *text* for expenses, log to Sheets, reply with confirmation."""
     msg = update.effective_message
+    uid = update.effective_user.id
+    lang = await get_user_lang(uid)
 
-    async def _edit(t: str) -> None:
+    async def _edit(t: str, html: bool = False) -> None:
+        pm = "HTML" if html else None
         if status_msg:
             try:
-                await status_msg.edit_text(t, parse_mode="HTML")
+                await status_msg.edit_text(t, parse_mode=pm)
             except Exception:
                 pass
 
-    await _edit("🔍 Expenses parse பண்றேன்…")
+    await _edit(m("expense_parsing", lang))
 
     expenses = await parse_expenses(text, today=str(date.today()))
     if not expenses:
-        await _edit(
-            "❌ Expense details கண்டுபிடிக்கவில்லை.\n\n"
-            "Example: <i>/expense today spent 200 for chai and 500 for petrol</i>",
-        )
+        await _edit(m("expense_not_found", lang), html=True)
         return
 
     # Log to Google Sheets
     if sheets_available():
-        await _edit("📊 Google Sheets-ல் save பண்றேன்…")
+        await _edit(m("expense_sheets_saving", lang))
         try:
-            uid = str(update.effective_user.id)
             await append_expenses(uid, expenses)
         except Exception as exc:
-            logger.error("Sheets append error: %s", exc, exc_info=True)
+            logger.error("Sheets append error for user %s: %s", uid, exc, exc_info=True)
             # [H2] Do not expose internal error details to the user.
-            await _edit(
-                "⚠️ Google Sheets-ல் save ஆகவில்லை. கொஞ்சம் நேரம் கழிச்சு மீண்டும் try பண்ணுங்க."
-            )
+            await _edit(m("expense_sheets_fail", lang))
             return
 
     # Build reply
-    lines = ["✅ <b>Expenses logged!</b>\n"]
+    lines = [
+        "✅ <b>Expenses logged!</b>\n" if lang == "en" else "✅ <b>Expenses save ஆச்சு!</b>\n"
+    ]
     total = 0.0
     for exp in expenses:
         amt = float(exp.get("amount", 0))
@@ -83,10 +86,7 @@ async def process_expense_text(
     lines.append(f"\n<b>Total: ₹{total:.0f}</b>")
 
     if not sheets_available():
-        lines.append(
-            "\n⚠️ <i>Google Sheets not configured — expenses not persisted. "
-            "Set GOOGLE_SHEETS_CREDENTIALS_JSON and GOOGLE_SHEET_ID.</i>"
-        )
+        lines.append(m("expense_no_sheets_note", lang))
 
     reply = "\n".join(lines)
     if status_msg:
@@ -106,30 +106,41 @@ async def handle_expense_command(
 ) -> None:
     """/expense <description>"""
     msg = update.message
+    uid = update.effective_user.id
+    lang = await get_user_lang(uid)
 
     # [C4] Enforce rate limit.
-    if not rate_limiter.is_allowed(update.effective_user.id):
-        await msg.reply_text(
-            "⏳ கொஞ்சம் slow பண்ணுங்க! சற்று நேரம் கழிச்சு மீண்டும் try பண்ணுங்க."
-        )
+    if not rate_limiter.is_allowed(uid):
+        await msg.reply_text(m("rate_limit", lang))
         return
 
     text = " ".join(context.args).strip() if context.args else ""
 
     if not text:
-        await msg.reply_text(
-            "📝 <b>Expense Tracker</b>\n\n"
-            "Usage: <code>/expense &lt;description&gt;</code>\n\n"
-            "Examples:\n"
-            "• <code>/expense today chai 30 and petrol 500</code>\n"
-            "• <code>/expense yesterday lunch 120 rupees</code>\n"
-            "• <code>/expense 200 for medicine on 2024-01-20</code>\n\n"
-            "📊 Or send a voice note describing your expenses!",
-            parse_mode="HTML",
-        )
+        if lang == "en":
+            help_text = (
+                "📝 <b>Expense Tracker</b>\n\n"
+                "Usage: <code>/expense &lt;description&gt;</code>\n\n"
+                "Examples:\n"
+                "• <code>/expense today chai 30 and petrol 500</code>\n"
+                "• <code>/expense yesterday lunch 120 rupees</code>\n"
+                "• <code>/expense 200 for medicine on 2024-01-20</code>\n\n"
+                "📊 Or send a voice note describing your expenses!"
+            )
+        else:
+            help_text = (
+                "📝 <b>Expense Tracker</b>\n\n"
+                "Usage: <code>/expense &lt;description&gt;</code>\n\n"
+                "Examples:\n"
+                "• <code>/expense today chai 30 and petrol 500</code>\n"
+                "• <code>/expense yesterday lunch 120 rupees</code>\n"
+                "• <code>/expense 200 for medicine on 2024-01-20</code>\n\n"
+                "📊 அல்லது voice note அனுப்புங்க!"
+            )
+        await msg.reply_text(help_text, parse_mode="HTML")
         return
 
-    status = await msg.reply_text("💰 Processing expense…")
+    status = await msg.reply_text(m("expense_parsing", lang))
     await process_expense_text(update, text, status_msg=status)
 
 
@@ -141,6 +152,9 @@ async def handle_summary_command(
 ) -> None:
     """/summary  or  /summary last"""
     msg = update.message
+    uid = update.effective_user.id
+    lang = await get_user_lang(uid)
+
     arg = (" ".join(context.args) if context.args else "").strip().lower()
     last_month = "last" in arg
 
@@ -155,34 +169,43 @@ async def handle_summary_command(
 
     month_label = f"{month_name[month]} {year}"
     status = await msg.reply_text(
-        f"📊 <b>{hl.escape(month_label)}</b> expenses fetch பண்றேன்…",
+        f"📊 <b>{hl.escape(month_label)}</b> expenses fetch பண்றேன்…"
+        if lang == "ta"
+        else f"📊 Fetching <b>{hl.escape(month_label)}</b> expenses…",
         parse_mode="HTML",
     )
 
     if not sheets_available():
-        await status.edit_text(
+        no_sheets = (
+            "❌ Google Sheets configure ஆகவில்லை.\n"
+            "<code>GOOGLE_SHEETS_CREDENTIALS_JSON</code> மற்றும் "
+            "<code>GOOGLE_SHEET_ID</code> set பண்ணுங்க."
+            if lang == "ta" else
             "❌ Google Sheets not configured.\n"
             "Set <code>GOOGLE_SHEETS_CREDENTIALS_JSON</code> and "
-            "<code>GOOGLE_SHEET_ID</code> environment variables.",
-            parse_mode="HTML",
+            "<code>GOOGLE_SHEET_ID</code> environment variables."
         )
+        await status.edit_text(no_sheets, parse_mode="HTML")
         return
 
-    uid = str(update.effective_user.id)
     expenses = await get_month_expenses(uid, year, month)
 
     if not expenses:
-        await status.edit_text(
-            f"📭 <b>{hl.escape(month_label)}</b>-ல் expenses இல்லை.",
-            parse_mode="HTML",
+        no_exp = (
+            f"📭 <b>{hl.escape(month_label)}</b>-ல் expenses இல்லை."
+            if lang == "ta"
+            else f"📭 No expenses found for <b>{hl.escape(month_label)}</b>."
         )
+        await status.edit_text(no_exp, parse_mode="HTML")
         return
 
-    await status.edit_text(
+    status_txt = (
         f"📈 {len(expenses)} transactions found. Chart + PDF தயாரிக்கிறேன்…"
+        if lang == "ta"
+        else f"📈 {len(expenses)} transactions found. Generating chart + PDF…"
     )
+    await status.edit_text(status_txt)
 
-    # Compute category totals for chart
     from collections import defaultdict
     category_totals: dict[str, float] = defaultdict(float)
     grand_total = 0.0
@@ -197,7 +220,7 @@ async def handle_summary_command(
 
     try:
         chart_path = generate_expense_chart(dict(category_totals), month_label)
-        user_name = update.effective_user.full_name or uid
+        user_name = update.effective_user.full_name or str(uid)
         pdf_path = generate_expense_summary_pdf(
             expenses, month_label, user_name=user_name, chart_path=chart_path
         )
@@ -226,11 +249,9 @@ async def handle_summary_command(
             )
 
     except Exception as exc:
-        logger.error("Summary PDF error: %s", exc, exc_info=True)
+        logger.error("Summary PDF error for user %s: %s", uid, exc, exc_info=True)
         # [H2] Never expose raw exception to users.
-        await status.edit_text(
-            "😕 Summary generate பண்ண முடியல! கொஞ்சம் நேரம் கழிச்சு மீண்டும் try பண்ணுங்க."
-        )
+        await status.edit_text(m("generic_error", lang))
     finally:
         for p in (chart_path, pdf_path):
             if p and os.path.exists(p):

@@ -4,9 +4,9 @@ Flow:
   1. Download OGG from Telegram.
   2. Transcribe with Groq Whisper.
   3. classify_voice_intent() → "bill" | "expense" | "other"
-  4. "bill"    → parse_items → generate_bill_pdf → send PDF
-     "expense" → process_expense_text (expense_handler)
-     "other"   → attempt bill flow; if empty, helpful error
+  4a. "bill"    → parse_items → generate_bill_pdf → send PDF → log to bill_history
+  4b. "expense" → process_expense_text (expense_handler)
+  4c. "other"   → attempt bill flow; if empty, helpful error
 """
 from __future__ import annotations
 
@@ -18,8 +18,11 @@ import tempfile
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from utils.groq_llm import classify_voice_intent, parse_items
+from utils.bill_history import bill_history_available, log_bill
+from utils.groq_llm import classify_voice_intent, detect_transcript_language, parse_items
 from utils.groq_whisper import transcribe_audio
+from utils.lang_store import get_user_lang
+from utils.msgs import m
 from utils.pdf_generator import generate_bill_pdf
 from utils.security import rate_limiter
 
@@ -31,15 +34,14 @@ _MAX_VOICE_BYTES = 20 * 1024 * 1024  # 20 MB
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     msg = update.message
     uid = update.effective_user.id
+    lang = await get_user_lang(uid)
 
     # [C4] Enforce rate limit before any processing.
     if not rate_limiter.is_allowed(uid):
-        await msg.reply_text(
-            "⏳ கொஞ்சம் slow பண்ணுங்க! சற்று நேரம் கழிச்சு மீண்டும் try பண்ணுங்க."
-        )
+        await msg.reply_text(m("rate_limit", lang))
         return
 
-    status = await msg.reply_text("🎤 Voice note கிடைச்சது! Process பண்றேன்…")
+    status = await msg.reply_text(m("voice_received", lang))
 
     audio_path: str | None = None
     pdf_path: str | None = None
@@ -50,9 +52,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
         # [H4] Check file size before downloading.
         if voice_file.file_size and voice_file.file_size > _MAX_VOICE_BYTES:
-            await status.edit_text(
-                "❌ Audio file too large (max 20 MB). சின்னதா record பண்ணுங்க."
-            )
+            await status.edit_text(m("voice_too_large", lang))
             return
 
         with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp:
@@ -61,26 +61,24 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         logger.info("Voice: %s (%.1f KB)", audio_path, os.path.getsize(audio_path) / 1024)
 
         # ── 2. Transcribe ─────────────────────────────────────────────────────
-        await status.edit_text("🎙️ Transcribe பண்றேன் (Groq Whisper)…")
+        await status.edit_text(m("voice_transcribing", lang))
         transcript = await transcribe_audio(audio_path)
 
         if not transcript.strip():
-            await status.edit_text(
-                "❌ Audio transcribe ஆகவில்லை.\n"
-                "தெளிவாக பேசி, background noise இல்லாம மீண்டும் try பண்ணுங்க."
-            )
+            await status.edit_text(m("voice_no_transcript", lang))
             return
+
+        # Detect script language for bilingual PDF headers
+        pdf_lang = detect_transcript_language(transcript)
+        logger.info("Transcript lang detected: %s", pdf_lang)
 
         # [H1] HTML-escape transcript preview before embedding in HTML message.
         preview = hl.escape(transcript[:100] + ("…" if len(transcript) > 100 else ""))
-        await status.edit_text(
-            f"📝 <b>Transcript:</b> <i>{preview}</i>\n\n🧠 Intent detect பண்றேன்…",
-            parse_mode="HTML",
-        )
+        await status.edit_text(m("voice_intent", lang, preview=preview), parse_mode="HTML")
 
         # ── 3. Classify intent ────────────────────────────────────────────────
         intent = await classify_voice_intent(transcript)
-        logger.info("Voice intent: '%s' | transcript: %s", intent, transcript[:80])
+        logger.info("Voice intent: '%s' | pdf_lang: '%s' | transcript: %s", intent, pdf_lang, transcript[:80])
 
         if intent == "expense":
             # ── expense route ─────────────────────────────────────────────────
@@ -89,36 +87,22 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             return
 
         # ── bill route (intent == "bill" OR "other") ──────────────────────────
-        await status.edit_text("🔍 Bill items parse பண்றேன்…")
+        await status.edit_text(m("voice_parsing_bill", lang))
         items = await parse_items(transcript)
 
         if not items:
             # [H1] HTML-escape transcript before embedding in HTML message.
-            safe_transcript = hl.escape(transcript[:200])
-            if intent == "other":
-                await status.edit_text(
-                    f"🤔 என்ன சொல்றீங்க என்று புரியல.\n\n"
-                    f"<b>Transcript:</b> <i>{safe_transcript}</i>\n\n"
-                    "💡 Bill-ஆ? <i>'2 kg sugar 80 rupees'</i> மாதிரி சொல்லுங்க.\n"
-                    "💰 Expense-ஆ? <i>'today spent 200 for chai'</i> மாதிரி சொல்லுங்க.",
-                    parse_mode="HTML",
-                )
-            else:
-                await status.edit_text(
-                    f"❌ Items parse ஆகவில்லை.\n\n"
-                    f"<b>Transcript:</b> <i>{safe_transcript}</i>\n\n"
-                    "Format: <i>'quantity item rate rupees'</i>\n"
-                    "Example: <i>2 kg sugar 80 rupees, 1 litre oil 160</i>",
-                    parse_mode="HTML",
-                )
+            safe_preview = hl.escape(transcript[:200])
+            key = "voice_no_items_other" if intent == "other" else "voice_no_items_bill"
+            await status.edit_text(m(key, lang, preview=safe_preview), parse_mode="HTML")
             return
 
         # ── generate PDF ──────────────────────────────────────────────────────
-        await status.edit_text(f"📄 {len(items)} items found. PDF தயாரிக்கிறேன்…")
-        pdf_path = generate_bill_pdf(items)
+        await status.edit_text(m("voice_pdf_gen", lang, count=len(items)))
+        pdf_path = generate_bill_pdf(items, language=pdf_lang)
 
         grand_total = sum(float(i.get("qty", 1)) * float(i.get("rate", 0)) for i in items)
-        caption = f"இதோ உங்க பில்! மொத்தம் &#8377; {grand_total:.0f}."
+        caption = m("voice_bill_done", lang, total=grand_total)
 
         try:
             await status.delete()
@@ -126,20 +110,31 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             pass
 
         with open(pdf_path, "rb") as pdf_file:
-            await msg.reply_document(
+            sent = await msg.reply_document(
                 document=pdf_file,
                 filename="bill.pdf",
                 caption=caption,
                 parse_mode="HTML",
             )
 
+        # ── log to bill history (non-blocking) ────────────────────────────────
+        if bill_history_available():
+            pdf_file_id = sent.document.file_id if sent and sent.document else ""
+            bill_no = await log_bill(uid, items, grand_total, pdf_file_id)
+            if bill_no:
+                try:
+                    await sent.reply_text(
+                        m("bill_logged", lang, bill_no=hl.escape(bill_no)),
+                        parse_mode="HTML",
+                    )
+                except Exception:
+                    pass
+
     except Exception as exc:
-        logger.error("Voice handler error: %s", exc, exc_info=True)
+        logger.error("Voice handler error for user %s: %s", uid, exc, exc_info=True)
         try:
             # [H2] Never expose raw exception to users; log internally only.
-            await status.edit_text(
-                "😕 ஏதோ problem ஆச்சு! கொஞ்சம் நேரம் கழிச்சு மீண்டும் try பண்ணுங்க."
-            )
+            await status.edit_text(m("generic_error", lang))
         except Exception:
             pass
 

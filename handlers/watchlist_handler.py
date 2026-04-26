@@ -6,6 +6,8 @@ Commands:
   /watchlist remove <n>   — remove entry number n
 
 Callback pattern:  wl_rm:{entry_id}
+
+Multi-user isolation: every Supabase/SQLite query is scoped to user_id.
 """
 from __future__ import annotations
 
@@ -16,6 +18,8 @@ import re
 from telegram import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
+from utils.lang_store import get_user_lang
+from utils.msgs import m
 from utils.supabase_client import add_to_watchlist, get_watchlist, remove_from_watchlist
 from utils.tmdb import search_movie
 
@@ -25,39 +29,36 @@ logger = logging.getLogger(__name__)
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 
-def _watchlist_text(entries: list[dict]) -> str:
+def _watchlist_text(entries: list[dict], lang: str) -> str:
     if not entries:
-        return (
-            "📋 <b>உங்க Watchlist காலியா இருக்கு!</b>\n\n"
-            "Add a movie with:\n"
-            "<code>/watchlist add Vikram</code>"
-        )
-    lines = ["📋 <b>உங்க Watchlist:</b>\n"]
+        return m("watchlist_empty", lang)
+    lines = ["📋 <b>உங்க Watchlist:</b>\n" if lang == "ta" else "📋 <b>Your Watchlist:</b>\n"]
     for i, e in enumerate(entries, 1):
         lines.append(f"{i}. 🎬 {hl.escape(e['title'])}")
-    lines.append(
-        "\n<i>Use the buttons below to remove, or "
-        "/watchlist add &lt;movie&gt; to add more.</i>"
-    )
+    if lang == "en":
+        lines.append("\n<i>Use the buttons below to remove, or /watchlist add &lt;movie&gt; to add more.</i>")
+    else:
+        lines.append("\n<i>Remove பண்ண below buttons use பண்ணுங்க, அல்லது /watchlist add &lt;movie&gt;.</i>")
     return "\n".join(lines)
 
 
 def _watchlist_keyboard(entries: list[dict]) -> InlineKeyboardMarkup:
-    rows = []
-    for i, e in enumerate(entries, 1):
-        rows.append(
-            [InlineKeyboardButton(f"❌ Remove {i}. {e['title'][:22]}", callback_data=f"wl_rm:{e['id']}")]
-        )
+    rows = [
+        [InlineKeyboardButton(f"❌ {i}. {e['title'][:24]}", callback_data=f"wl_rm:{e['id']}")]
+        for i, e in enumerate(entries, 1)
+    ]
     return InlineKeyboardMarkup(rows) if rows else InlineKeyboardMarkup([[]])
 
 
-# ── /watchlist ────────────────────────────────────────────────────────────────
+# ── /watchlist command ────────────────────────────────────────────────────────
 
 
 async def handle_watchlist_command(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
     msg = update.message
+    uid = update.effective_user.id
+    lang = await get_user_lang(uid)
     args = context.args or []
     sub = args[0].lower() if args else ""
 
@@ -69,7 +70,7 @@ async def handle_watchlist_command(
                 parse_mode="HTML",
             )
             return
-        await _add_movie(update, movie_name)
+        await _add_movie(update, movie_name, lang)
 
     elif sub == "remove":
         num_str = args[1] if len(args) > 1 else ""
@@ -79,71 +80,83 @@ async def handle_watchlist_command(
                 parse_mode="HTML",
             )
             return
-        await _remove_by_index(update, int(num_str))
+        await _remove_by_index(update, int(num_str), lang)
 
     else:
-        await _show_list(update)
+        await _show_list(update, lang)
 
 
-async def _show_list(update: Update) -> None:
+async def _show_list(update: Update, lang: str) -> None:
     uid = update.effective_user.id
-    status = await update.effective_message.reply_text("📋 Watchlist load பண்றேன்…")
+    status = await update.effective_message.reply_text(m("watchlist_loading", lang))
     try:
         entries = await get_watchlist(uid)
-        text = _watchlist_text(entries)
+        text = _watchlist_text(entries, lang)
         keyboard = _watchlist_keyboard(entries)
         await status.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
     except Exception as exc:
-        logger.error("Watchlist list error: %s", exc, exc_info=True)
-        # [H2] Generic error — no internal details to user.
-        await status.edit_text("😕 Watchlist load பண்ண முடியல! மீண்டும் try பண்ணுங்க.")
+        logger.error("Watchlist list error for user %s: %s", uid, exc, exc_info=True)
+        await status.edit_text(
+            m("watchlist_load_fail", lang, err=hl.escape(type(exc).__name__)),
+            parse_mode="HTML",
+        )
 
 
-async def _add_movie(update: Update, movie_name: str) -> None:
+async def _add_movie(update: Update, movie_name: str, lang: str) -> None:
     msg = update.effective_message
+    uid = update.effective_user.id
     status = await msg.reply_text(
-        f"🔍 '<b>{hl.escape(movie_name)}</b>' TMDB-ல் தேடுகிறேன்…",
+        m("watchlist_add_searching", lang, name=hl.escape(movie_name)),
         parse_mode="HTML",
     )
     try:
         movie = await search_movie(movie_name)
         if not movie:
             await status.edit_text(
-                f"❌ '<b>{hl.escape(movie_name)}</b>' கண்டுபிடிக்கவில்லை.",
+                m("watchlist_not_found", lang, name=hl.escape(movie_name)),
                 parse_mode="HTML",
             )
             return
-        uid = update.effective_user.id
-        await add_to_watchlist(uid, movie["id"], movie["title"], movie.get("poster_url"))
+
+        await status.edit_text(m("watchlist_saving", lang))
+        backend = await add_to_watchlist(uid, movie["id"], movie["title"], movie.get("poster_url"))
+
+        note = m("watchlist_sqlite_note", lang) if backend == "sqlite" else ""
         await status.edit_text(
-            f"✅ <b>{hl.escape(movie['title'])}</b> ({movie['year']}) "
-            f"watchlist-ல் add ஆச்சு! 🎬",
+            m("watchlist_add_ok", lang,
+              title=hl.escape(movie["title"]),
+              year=hl.escape(movie.get("year") or "")) + note,
             parse_mode="HTML",
         )
+        logger.info("Watchlist add OK: user=%s movie=%s backend=%s", uid, movie["title"], backend)
     except Exception as exc:
-        logger.error("Watchlist add error: %s", exc, exc_info=True)
-        await status.edit_text("😕 Watchlist-ல் add பண்ண முடியல! மீண்டும் try பண்ணுங்க.")
+        logger.error("Watchlist add error for user %s / '%s': %s", uid, movie_name, exc, exc_info=True)
+        await status.edit_text(
+            m("watchlist_add_fail", lang, err=hl.escape(type(exc).__name__)),
+            parse_mode="HTML",
+        )
 
 
-async def _remove_by_index(update: Update, n: int) -> None:
+async def _remove_by_index(update: Update, n: int, lang: str) -> None:
     uid = update.effective_user.id
     try:
         entries = await get_watchlist(uid)
         if n < 1 or n > len(entries):
             await update.effective_message.reply_text(
-                f"❌ Invalid number. Your watchlist has {len(entries)} entries."
+                m("watchlist_invalid_number", lang, count=len(entries))
             )
             return
         entry = entries[n - 1]
         await remove_from_watchlist(entry["id"], uid)
         await update.effective_message.reply_text(
-            f"🗑️ <b>{hl.escape(entry['title'])}</b> removed from watchlist.",
+            m("watchlist_remove_ok", lang, title=hl.escape(entry["title"])),
             parse_mode="HTML",
         )
     except Exception as exc:
-        logger.error("Watchlist remove error: %s", exc, exc_info=True)
+        logger.error("Watchlist remove error for user %s: %s", uid, exc, exc_info=True)
         await update.effective_message.reply_text(
-            "😕 Remove பண்ண முடியல! மீண்டும் try பண்ணுங்க."
+            m("watchlist_remove_fail", lang, err=hl.escape(type(exc).__name__)),
+            parse_mode="HTML",
         )
 
 
@@ -163,18 +176,20 @@ async def handle_watchlist_callback(
 
     entry_id = int(match.group(1))
     uid = update.effective_user.id
+    lang = await get_user_lang(uid)
 
     try:
         await remove_from_watchlist(entry_id, uid)
-        # Refresh the list in place
         entries = await get_watchlist(uid)
-        text = _watchlist_text(entries)
+        text = _watchlist_text(entries, lang)
         keyboard = _watchlist_keyboard(entries)
         await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
     except Exception as exc:
-        logger.error("Watchlist callback error: %s", exc, exc_info=True)
+        logger.error("Watchlist callback error for user %s: %s", uid, exc, exc_info=True)
         try:
-            # [H2] Generic error — no internal details to user.
-            await query.edit_message_text("😕 Remove பண்ண முடியல! மீண்டும் try பண்ணுங்க.")
+            await query.edit_message_text(
+                m("watchlist_remove_fail", lang, err=hl.escape(type(exc).__name__)),
+                parse_mode="HTML",
+            )
         except Exception:
             pass

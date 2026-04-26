@@ -21,7 +21,9 @@ google-auth>=2.23.0
 supabase>=2.0.0
 
 # ── YouTube audio ─────────────────────────────────────────────────────────────
-yt-dlp>=2024.1.0
+# Pin to a recent release — yt-dlp updates frequently to track YouTube changes.
+# Bump this version when downloads start failing (sign of YouTube API change).
+yt-dlp>=2024.11.18
 
 # ── OCR ───────────────────────────────────────────────────────────────────────
 pytesseract>=0.3.10
