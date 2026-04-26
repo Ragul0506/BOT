@@ -9,18 +9,18 @@ Functions:
 """
 from __future__ import annotations
 
+import html as _html
 import logging
 import os
 import tempfile
 from collections import defaultdict
 from datetime import datetime
+from itertools import count as _count
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import cm
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import (
     HRFlowable,
     Image as RLImage,
@@ -33,43 +33,45 @@ from reportlab.platypus import (
 
 logger = logging.getLogger(__name__)
 
-_FONTS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "fonts")
-_FONT_TTF = os.path.join(_FONTS_DIR, "NotoSansTamil-Regular.ttf")
-_FONT_NAME = "NotoSansTamil"
-_font_ready = False
+# Built-in Helvetica — no external font file required.
+_FONT = "Helvetica"
+_FONT_BOLD = "Helvetica-Bold"
+
+# Monotonically increasing counter used to give every ParagraphStyle a unique
+# name, preventing ReportLab's internal style registry from returning a stale
+# cached style on repeated calls to the same generator function.
+_style_seq = _count(1)
 
 
-def _register_tamil_font() -> str:
-    """Register the Tamil font once; return font name to use."""
-    global _font_ready
-    if not _font_ready:
-        if os.path.exists(_FONT_TTF):
-            pdfmetrics.registerFont(TTFont(_FONT_NAME, _FONT_TTF))
-            _font_ready = True
-            logger.info("Tamil font registered: %s", _FONT_TTF)
-        else:
-            logger.warning(
-                "Tamil font not found at %s — falling back to Helvetica. "
-                "Run `python download_fonts.py` to fix this.",
-                _FONT_TTF,
-            )
-    return _FONT_NAME if _font_ready else "Helvetica"
+def _uid() -> str:
+    return str(next(_style_seq))
 
 
-# ── style helpers ─────────────────────────────────────────────────────────────
+def _e(value) -> str:
+    """HTML-escape an arbitrary value for safe embedding in a ReportLab Paragraph.
+
+    Paragraph is an XML parser — bare '&', '<', '>' in user-supplied text cause
+    silent parse failures and empty cells.  Always call _e() on variable data.
+    """
+    return _html.escape(str(value), quote=False)
 
 
-def _ps(name: str, font: str, **kw) -> ParagraphStyle:
-    return ParagraphStyle(name, fontName=font, **kw)
+def _ps(name: str, bold: bool = False, **kw) -> ParagraphStyle:
+    """Create a uniquely-named ParagraphStyle using built-in Helvetica."""
+    return ParagraphStyle(
+        f"{name}_{_uid()}",
+        fontName=_FONT_BOLD if bold else _FONT,
+        **kw,
+    )
 
 
 def _p(text: str, style: ParagraphStyle) -> Paragraph:
     return Paragraph(text, style)
 
 
-def _build_doc(tmp_path: str) -> SimpleDocTemplate:
+def _build_doc(path: str) -> SimpleDocTemplate:
     return SimpleDocTemplate(
-        tmp_path,
+        path,
         pagesize=A4,
         rightMargin=1.5 * cm,
         leftMargin=1.5 * cm,
@@ -102,6 +104,9 @@ def next_service_roll_number(shop_name: str, date_obj: datetime | None = None) -
 
 # ── A. Grocery / Shopping Bill ────────────────────────────────────────────────
 
+# A4 usable width = 21.0 cm − 2 × 1.5 cm margins = 18.0 cm
+_GROCERY_COL_WIDTHS = [1.5 * cm, 7.3 * cm, 2.0 * cm, 3.6 * cm, 3.6 * cm]  # Σ = 18.0 cm
+
 
 def generate_grocery_bill(
     items: list[dict],
@@ -111,118 +116,120 @@ def generate_grocery_bill(
     """Build a clean English grocery/shopping bill PDF.
 
     Args:
-        items:       List of {'item', 'qty', 'rate'} dicts.
-        bill_number: Optional bill number string (auto-generated from datetime if empty).
-        lang:        'en' (default) or 'ta' for bilingual headers.
+        items:       List of {'item': str, 'qty': number, 'rate': number} dicts.
+        bill_number: Optional bill number (auto-generated from datetime if empty).
+        lang:        Accepted for API compatibility; always generates English PDF.
     Returns:
-        Temp file path (caller must delete).
+        Temp file path — caller is responsible for deletion.
     """
-    font = _register_tamil_font()
-
     NAVY = colors.HexColor("#1a237e")
     NAVY_DARK = colors.HexColor("#283593")
     STRIPE = colors.HexColor("#e8eaf6")
-    GRID_CLR = colors.HexColor("#c5cae9")
+    GRID = colors.HexColor("#c5cae9")
 
-    s_shop   = _ps("GShop",   font, fontSize=20, alignment=1, textColor=NAVY,      spaceAfter=2)
-    s_sub    = _ps("GSub",    font, fontSize=11, alignment=1, textColor=NAVY_DARK,  spaceAfter=3)
-    s_meta   = _ps("GMeta",   font, fontSize=9,  alignment=1, textColor=colors.grey, spaceAfter=2)
-    s_footer = _ps("GFoot",   font, fontSize=8,  alignment=1, textColor=colors.grey)
-    s_th     = _ps("GTH",     font, fontSize=10, textColor=colors.white, alignment=1)
-    s_td_c   = _ps("GTDC",    font, fontSize=9,  alignment=1)
-    s_td_l   = _ps("GTDL",    font, fontSize=9,  alignment=0)
-    s_total  = _ps("GTot",    font, fontSize=10, textColor=colors.white, alignment=1)
+    s_shop = _ps("GShop", bold=True,  fontSize=22, alignment=1, textColor=NAVY,       spaceAfter=2)
+    s_sub  = _ps("GSub",               fontSize=11, alignment=1, textColor=NAVY_DARK,  spaceAfter=3)
+    s_meta = _ps("GMeta",              fontSize=9,  alignment=1, textColor=colors.grey, spaceAfter=2)
+    s_foot = _ps("GFoot",              fontSize=8,  alignment=1, textColor=colors.grey)
+    s_th   = _ps("GTH",   bold=True,  fontSize=10, alignment=1, textColor=colors.white)
+    s_tdc  = _ps("GTDC",               fontSize=9,  alignment=1)
+    s_tdl  = _ps("GTDL",               fontSize=9,  alignment=0)
+    s_tot  = _ps("GTot",  bold=True,  fontSize=10, alignment=1, textColor=colors.white)
 
     tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
     tmp.close()
     doc = _build_doc(tmp.name)
     now = datetime.now()
-    bill_no = bill_number or now.strftime("%Y%m%d%H%M")
+    bill_no = _e(bill_number or now.strftime("%Y%m%d%H%M"))
 
-    story = []
+    story: list = []
 
-    # Header
-    story.append(_p("GroceryBot Bill", s_shop))
-    story.append(_p("Your Personal Shopping Invoice", s_sub))
-    story.append(_p("&#128222; GroceryBot &nbsp;|&nbsp; AI-Powered Bill Generator", s_meta))
-    story.append(HRFlowable(width="100%", thickness=1.5, color=NAVY, spaceAfter=6))
+    # ── Header ────────────────────────────────────────────────────────────────
+    story.append(_p("GroceryBot Store", s_shop))
+    story.append(_p("Invoice", s_sub))
+    story.append(HRFlowable(width="100%", thickness=2, color=NAVY, spaceAfter=4))
     story.append(_p(
-        f"Date: {now.strftime('%d-%m-%Y')} &nbsp;|&nbsp; "
-        f"Time: {now.strftime('%H:%M')} &nbsp;|&nbsp; "
+        f"Date: {now.strftime('%d-%m-%Y')}&nbsp;&nbsp;|&nbsp;&nbsp;"
+        f"Time: {now.strftime('%H:%M')}&nbsp;&nbsp;|&nbsp;&nbsp;"
         f"Bill No: {bill_no}",
         s_meta,
     ))
     story.append(Spacer(1, 0.5 * cm))
 
-    # Item table
-    col_widths = [1.2 * cm, 7.5 * cm, 2 * cm, 3 * cm, 3 * cm]
+    # ── Item table ─────────────────────────────────────────────────────────────
     rows: list[list] = [[
-        _p("S.No", s_th),
-        _p("Item", s_th),
-        _p("Qty", s_th),
-        _p("Rate (&#8377;)", s_th),
+        _p("S.No",             s_th),
+        _p("Item",             s_th),
+        _p("Qty",              s_th),
+        _p("Rate (&#8377;)",   s_th),
         _p("Amount (&#8377;)", s_th),
     ]]
 
     grand_total = 0.0
     for idx, item in enumerate(items, 1):
+        name   = _e(item.get("item", ""))
         qty    = float(item.get("qty", 1))
         rate   = float(item.get("rate", 0))
         amount = qty * rate
         grand_total += amount
         rows.append([
-            _p(str(idx), s_td_c),
-            _p(str(item.get("item", "")), s_td_l),
-            _p(f"{qty:g}", s_td_c),
-            _p(f"{rate:.2f}", s_td_c),
-            _p(f"{amount:.2f}", s_td_c),
+            _p(str(idx),       s_tdc),
+            _p(name,           s_tdl),
+            _p(f"{qty:g}",     s_tdc),
+            _p(f"{rate:.2f}",  s_tdc),
+            _p(f"{amount:.2f}", s_tdc),
         ])
 
     rows.append([
-        _p("", s_total), _p("", s_total), _p("", s_total),
-        _p("Total", s_total),
-        _p(f"&#8377; {grand_total:.2f}", s_total),
+        _p("", s_tot), _p("", s_tot), _p("", s_tot),
+        _p("Total",                           s_tot),
+        _p(f"&#8377;&nbsp;{grand_total:.2f}", s_tot),
     ])
 
-    table = Table(rows, colWidths=col_widths, repeatRows=1)
-    style_cmds = [
-        ("BACKGROUND",    (0, 0),  (-1, 0),  NAVY),
-        ("ROWHEIGHT",      (0, 0),  (-1, 0),  24),
+    tbl = Table(rows, colWidths=_GROCERY_COL_WIDTHS, repeatRows=1)
+    cmds = [
+        ("BACKGROUND",    (0,  0), (-1,  0), NAVY),
+        ("ROWHEIGHT",     (0,  0), (-1,  0), 24),
         ("BACKGROUND",    (0, -1), (-1, -1), NAVY_DARK),
-        ("ROWHEIGHT",      (0, -1), (-1, -1), 24),
-        ("GRID",           (0, 0),  (-1, -2), 0.5, GRID_CLR),
-        ("LINEABOVE",      (0, -1), (-1, -1), 1.5, NAVY),
-        ("VALIGN",         (0, 0),  (-1, -1), "MIDDLE"),
-        ("LEFTPADDING",    (0, 0),  (-1, -1), 6),
-        ("RIGHTPADDING",   (0, 0),  (-1, -1), 6),
-        ("TOPPADDING",     (0, 0),  (-1, -1), 5),
-        ("BOTTOMPADDING",  (0, 0),  (-1, -1), 5),
+        ("ROWHEIGHT",     (0, -1), (-1, -1), 26),
+        ("GRID",          (0,  0), (-1, -2), 0.5, GRID),
+        ("LINEABOVE",     (0, -1), (-1, -1), 1.5, NAVY),
+        ("VALIGN",        (0,  0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING",   (0,  0), (-1, -1), 6),
+        ("RIGHTPADDING",  (0,  0), (-1, -1), 6),
+        ("TOPPADDING",    (0,  0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0,  0), (-1, -1), 5),
     ]
     for i in range(1, len(rows) - 1):
-        style_cmds.append(("BACKGROUND", (0, i), (-1, i),
-                           colors.white if i % 2 == 1 else STRIPE))
-    table.setStyle(TableStyle(style_cmds))
-    story.append(table)
+        cmds.append(("BACKGROUND", (0, i), (-1, i),
+                     colors.white if i % 2 == 1 else STRIPE))
+    tbl.setStyle(TableStyle(cmds))
+    story.append(tbl)
     story.append(Spacer(1, 0.8 * cm))
 
-    # Footer
+    # ── Footer ────────────────────────────────────────────────────────────────
     story.append(HRFlowable(width="100%", thickness=0.5, color=colors.lightgrey))
     story.append(Spacer(1, 0.2 * cm))
-    story.append(_p("Thank you for your purchase!", s_footer))
-    story.append(_p(f"Generated by GroceryBot &bull; {now.strftime('%Y')}", s_footer))
+    story.append(_p("Thank you for your purchase!", s_foot))
+    story.append(_p(f"Generated by GroceryBot &bull; {now.strftime('%Y')}", s_foot))
 
     doc.build(story)
-    logger.info("Grocery PDF: %s | bill_no=%s | total=%.2f", tmp.name, bill_no, grand_total)
+    logger.info(
+        "Grocery PDF: %s | bill_no=%s | items=%d | total=%.2f",
+        tmp.name, bill_no, len(items), grand_total,
+    )
     return tmp.name
 
 
 # ── B. Service / Beauty Parlour Bill ─────────────────────────────────────────
 
+_SERVICE_COL_WIDTHS = [1.5 * cm, 11.3 * cm, 5.2 * cm]  # Σ = 18.0 cm
+
 
 def generate_service_bill(
     shop_name: str,
     customer_name: str,
-    services: list[dict],   # [{'item': str, 'qty': float, 'rate': float}]
+    services: list[dict],   # [{'item': str, 'qty': number, 'rate': number}]
     bill_number: str,
     date_str: str = "",
     time_str: str = "",
@@ -232,122 +239,119 @@ def generate_service_bill(
     Args:
         shop_name:     Shop / parlour name (e.g. "SRI NARPAVI BEAUTY PARLOUR").
         customer_name: Customer's first name or "Valued Customer".
-        services:      List of {'item', 'qty', 'rate'} dicts from parse_items().
+        services:      List of {'item': str, 'qty': number, 'rate': number} dicts.
         bill_number:   Roll number e.g. "SNBP-260426-001".
-        date_str:      Bill date in DD-MM-YYYY; auto-filled if empty.
-        time_str:      Bill time in HH:MM; auto-filled if empty.
+        date_str:      Bill date DD-MM-YYYY; auto-filled if empty.
+        time_str:      Bill time HH:MM; auto-filled if empty.
     Returns:
-        Temp file path (caller must delete).
+        Temp file path — caller is responsible for deletion.
     """
-    font = _register_tamil_font()
     now = datetime.now()
     date_str = date_str or now.strftime("%d-%m-%Y")
     time_str = time_str or now.strftime("%H:%M")
 
-    # Pink / rose color scheme for beauty/service bills
     PINK      = colors.HexColor("#880e4f")
     PINK_DARK = colors.HexColor("#c2185b")
     STRIPE    = colors.HexColor("#fce4ec")
-    GRID_CLR  = colors.HexColor("#f48fb1")
+    GRID      = colors.HexColor("#f48fb1")
 
-    s_shop   = _ps("SShop",  font, fontSize=18, alignment=1, textColor=PINK,      spaceAfter=2)
-    s_sub    = _ps("SSub",   font, fontSize=10, alignment=1, textColor=PINK_DARK, spaceAfter=3)
-    s_meta   = _ps("SMeta",  font, fontSize=9,  alignment=1, textColor=colors.grey, spaceAfter=2)
-    s_label  = _ps("SLabel", font, fontSize=9,  alignment=0, textColor=colors.HexColor("#444444"))
-    s_footer = _ps("SFoot",  font, fontSize=8,  alignment=1, textColor=PINK_DARK)
-    s_th     = _ps("STH",    font, fontSize=10, textColor=colors.white, alignment=1)
-    s_td_c   = _ps("STDC",   font, fontSize=9,  alignment=1)
-    s_td_l   = _ps("STDL",   font, fontSize=9,  alignment=0)
-    s_total  = _ps("STot",   font, fontSize=11, textColor=colors.white, alignment=1)
+    s_shop  = _ps("SShop", bold=True, fontSize=20, alignment=1, textColor=PINK,      spaceAfter=2)
+    s_sub   = _ps("SSub",             fontSize=11, alignment=1, textColor=PINK_DARK, spaceAfter=3)
+    s_foot  = _ps("SFoot",            fontSize=8,  alignment=1, textColor=PINK_DARK)
+    s_th    = _ps("STH",   bold=True, fontSize=10, alignment=1, textColor=colors.white)
+    s_tdc   = _ps("STDC",             fontSize=9,  alignment=1)
+    s_tdl   = _ps("STDL",             fontSize=9,  alignment=0)
+    s_tot   = _ps("STot",  bold=True, fontSize=11, alignment=1, textColor=colors.white)
+    s_lbl   = _ps("SLbl",  bold=True, fontSize=9,  alignment=0, textColor=PINK)
+    s_val   = _ps("SVal",             fontSize=9,  alignment=0)
 
     tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
     tmp.close()
     doc = _build_doc(tmp.name)
 
-    story = []
+    story: list = []
 
-    # Header
-    story.append(_p(shop_name.upper(), s_shop))
+    # ── Header ────────────────────────────────────────────────────────────────
+    story.append(_p(_e(shop_name.upper()), s_shop))
     story.append(_p("Service Invoice", s_sub))
     story.append(HRFlowable(width="100%", thickness=2, color=PINK, spaceAfter=6))
 
-    # Bill meta info table (2-column layout)
+    # ── Bill meta (2-column label / value layout) ─────────────────────────────
     meta_rows = [
-        ["Roll No:",    bill_number,   "Date:", date_str],
-        ["Customer:",   customer_name, "Time:", time_str],
+        [_p("Roll No",   s_lbl), _p(_e(bill_number),   s_val),
+         _p("Date",      s_lbl), _p(_e(date_str),      s_val)],
+        [_p("Customer",  s_lbl), _p(_e(customer_name), s_val),
+         _p("Time",      s_lbl), _p(_e(time_str),      s_val)],
     ]
-    meta_table = Table(meta_rows, colWidths=[3 * cm, 6 * cm, 2.5 * cm, 4.5 * cm])
-    meta_table.setStyle(TableStyle([
-        ("FONTNAME",    (0, 0), (-1, -1), font),
-        ("FONTSIZE",    (0, 0), (-1, -1), 9),
-        ("TEXTCOLOR",   (0, 0), (0, -1), PINK),
-        ("TEXTCOLOR",   (2, 0), (2, -1), PINK),
-        ("FONTNAME",    (0, 0), (0, -1), font),
-        ("FONTNAME",    (2, 0), (2, -1), font),
-        ("TOPPADDING",  (0, 0), (-1, -1), 3),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+    meta_tbl = Table(meta_rows, colWidths=[2.5 * cm, 6.5 * cm, 2.0 * cm, 4.0 * cm])
+    meta_tbl.setStyle(TableStyle([
+        ("FONTSIZE",      (0, 0), (-1, -1), 9),
+        ("TOPPADDING",    (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("LEFTPADDING",   (0, 0), (-1, -1), 4),
+        ("RIGHTPADDING",  (0, 0), (-1, -1), 4),
     ]))
-    story.append(meta_table)
-    story.append(Spacer(1, 0.4 * cm))
-    story.append(HRFlowable(width="100%", thickness=0.5, color=GRID_CLR, spaceAfter=6))
+    story.append(meta_tbl)
+    story.append(Spacer(1, 0.3 * cm))
+    story.append(HRFlowable(width="100%", thickness=0.5, color=GRID, spaceAfter=6))
 
-    # Services table
-    col_widths = [1.2 * cm, 9 * cm, 5.8 * cm]
+    # ── Services table ─────────────────────────────────────────────────────────
     rows: list[list] = [[
-        _p("S.No", s_th),
-        _p("Service", s_th),
+        _p("S.No",             s_th),
+        _p("Service",          s_th),
         _p("Amount (&#8377;)", s_th),
     ]]
 
     grand_total = 0.0
     for idx, svc in enumerate(services, 1):
+        name   = _e(svc.get("item", ""))
         qty    = float(svc.get("qty", 1))
         rate   = float(svc.get("rate", 0))
         amount = qty * rate
         grand_total += amount
         rows.append([
-            _p(str(idx), s_td_c),
-            _p(str(svc.get("item", "")), s_td_l),
-            _p(f"{amount:.2f}", s_td_c),
+            _p(str(idx),        s_tdc),
+            _p(name,            s_tdl),
+            _p(f"{amount:.2f}", s_tdc),
         ])
 
     rows.append([
-        _p("", s_total),
-        _p("Total Amount", s_total),
-        _p(f"&#8377; {grand_total:.2f}", s_total),
+        _p("",                                s_tot),
+        _p("Total Amount",                    s_tot),
+        _p(f"&#8377;&nbsp;{grand_total:.2f}", s_tot),
     ])
 
-    table = Table(rows, colWidths=col_widths, repeatRows=1)
-    style_cmds = [
-        ("BACKGROUND",    (0, 0),  (-1, 0),  PINK),
-        ("ROWHEIGHT",      (0, 0),  (-1, 0),  24),
+    tbl = Table(rows, colWidths=_SERVICE_COL_WIDTHS, repeatRows=1)
+    cmds = [
+        ("BACKGROUND",    (0,  0), (-1,  0), PINK),
+        ("ROWHEIGHT",     (0,  0), (-1,  0), 24),
         ("BACKGROUND",    (0, -1), (-1, -1), PINK_DARK),
-        ("ROWHEIGHT",      (0, -1), (-1, -1), 26),
-        ("GRID",           (0, 0),  (-1, -2), 0.5, GRID_CLR),
-        ("LINEABOVE",      (0, -1), (-1, -1), 1.5, PINK),
-        ("VALIGN",         (0, 0),  (-1, -1), "MIDDLE"),
-        ("LEFTPADDING",    (0, 0),  (-1, -1), 6),
-        ("RIGHTPADDING",   (0, 0),  (-1, -1), 6),
-        ("TOPPADDING",     (0, 0),  (-1, -1), 5),
-        ("BOTTOMPADDING",  (0, 0),  (-1, -1), 5),
+        ("ROWHEIGHT",     (0, -1), (-1, -1), 26),
+        ("GRID",          (0,  0), (-1, -2), 0.5, GRID),
+        ("LINEABOVE",     (0, -1), (-1, -1), 1.5, PINK),
+        ("VALIGN",        (0,  0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING",   (0,  0), (-1, -1), 6),
+        ("RIGHTPADDING",  (0,  0), (-1, -1), 6),
+        ("TOPPADDING",    (0,  0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0,  0), (-1, -1), 5),
     ]
     for i in range(1, len(rows) - 1):
-        style_cmds.append(("BACKGROUND", (0, i), (-1, i),
-                           colors.white if i % 2 == 1 else STRIPE))
-    table.setStyle(TableStyle(style_cmds))
-    story.append(table)
+        cmds.append(("BACKGROUND", (0, i), (-1, i),
+                     colors.white if i % 2 == 1 else STRIPE))
+    tbl.setStyle(TableStyle(cmds))
+    story.append(tbl)
     story.append(Spacer(1, 0.8 * cm))
 
-    # Footer
-    story.append(HRFlowable(width="100%", thickness=0.5, color=GRID_CLR))
+    # ── Footer ────────────────────────────────────────────────────────────────
+    story.append(HRFlowable(width="100%", thickness=0.5, color=GRID))
     story.append(Spacer(1, 0.2 * cm))
-    story.append(_p("We care for your beauty – Visit again! &#10084;", s_footer))
-    story.append(_p(f"Generated by GroceryBot &bull; {now.strftime('%Y')}", s_footer))
+    story.append(_p("We care for your beauty &#8211; Visit again! &#10084;", s_foot))
+    story.append(_p(f"Generated by GroceryBot &bull; {now.strftime('%Y')}", s_foot))
 
     doc.build(story)
     logger.info(
-        "Service PDF: %s | shop=%s | roll=%s | total=%.2f",
-        tmp.name, shop_name, bill_number, grand_total,
+        "Service PDF: %s | shop=%s | roll=%s | items=%d | total=%.2f",
+        tmp.name, shop_name, bill_number, len(services), grand_total,
     )
     return tmp.name
 
@@ -361,42 +365,34 @@ def generate_expense_summary_pdf(
     user_name: str = "",
     chart_path: str | None = None,
 ) -> str:
-    """Build a monthly expense report PDF; return temp file path.
-
-    Title: "Ragul's Monthly Expense Report – {month_label}"
-    """
-    font = _register_tamil_font()
-
+    """Build a monthly expense report PDF; return temp file path."""
     NAVY      = colors.HexColor("#1a237e")
     NAVY_DARK = colors.HexColor("#283593")
     STRIPE    = colors.HexColor("#e8eaf6")
-    GRID_CLR  = colors.HexColor("#c5cae9")
+    GRID      = colors.HexColor("#c5cae9")
 
-    def sp(name, **kw):
-        return ParagraphStyle(name, fontName=font, **kw)
-
-    s_title   = sp("ET",  fontSize=18, alignment=1, textColor=NAVY,      spaceAfter=2)
-    s_sub     = sp("ES",  fontSize=11, alignment=1, textColor=NAVY_DARK,  spaceAfter=3)
-    s_meta    = sp("EM",  fontSize=9,  alignment=1, textColor=colors.grey, spaceAfter=2)
-    s_footer  = sp("EF",  fontSize=8,  alignment=1, textColor=colors.grey)
-    s_th      = sp("ETH", fontSize=10, textColor=colors.white, alignment=1)
-    s_td_c    = sp("ETC", fontSize=9,  alignment=1)
-    s_td_l    = sp("ETL", fontSize=9,  alignment=0)
-    s_cat_hdr = sp("ECH", fontSize=12, textColor=NAVY,  spaceAfter=4, spaceBefore=8)
-    s_total   = sp("ETot",fontSize=11, textColor=colors.white, alignment=1)
+    s_title  = _ps("ET",  bold=True, fontSize=18, alignment=1, textColor=NAVY,      spaceAfter=2)
+    s_sub    = _ps("ES",             fontSize=11, alignment=1, textColor=NAVY_DARK,  spaceAfter=3)
+    s_meta   = _ps("EM",             fontSize=9,  alignment=1, textColor=colors.grey, spaceAfter=2)
+    s_foot   = _ps("EF",             fontSize=8,  alignment=1, textColor=colors.grey)
+    s_th     = _ps("ETH", bold=True, fontSize=10, alignment=1, textColor=colors.white)
+    s_tdc    = _ps("ETC",            fontSize=9,  alignment=1)
+    s_tdl    = _ps("ETL",            fontSize=9,  alignment=0)
+    s_cathdr = _ps("ECH", bold=True, fontSize=12, textColor=NAVY, spaceAfter=4, spaceBefore=8)
+    s_tot    = _ps("ETot",bold=True, fontSize=11, alignment=1, textColor=colors.white)
 
     tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
     tmp.close()
     doc = _build_doc(tmp.name)
-
     now = datetime.now()
+
     story: list = []
 
-    story.append(Paragraph("Ragul's Monthly Expense Report", s_title))
-    story.append(Paragraph(month_label, s_sub))
+    story.append(_p("Ragul&#8217;s Monthly Expense Report", s_title))
+    story.append(_p(_e(month_label), s_sub))
     if user_name:
-        story.append(Paragraph(f"Prepared for: {user_name}", s_meta))
-    story.append(Paragraph(f"Generated: {now.strftime('%d-%m-%Y %H:%M')}", s_meta))
+        story.append(_p(f"Prepared for: {_e(user_name)}", s_meta))
+    story.append(_p(f"Generated: {now.strftime('%d-%m-%Y %H:%M')}", s_meta))
     story.append(HRFlowable(width="100%", thickness=1.5, color=NAVY, spaceAfter=8))
 
     if chart_path and os.path.exists(chart_path):
@@ -412,85 +408,88 @@ def generate_expense_summary_pdf(
         category_totals[cat] += amt
         grand_total += amt
 
-    story.append(Paragraph("Category Breakdown", s_cat_hdr))
+    story.append(_p("Category Breakdown", s_cathdr))
 
     cat_rows: list[list] = [[
-        Paragraph("Category", s_th),
-        Paragraph("Total (&#8377;)", s_th),
-        Paragraph("% of Spend", s_th),
+        _p("Category",       s_th),
+        _p("Total (&#8377;)", s_th),
+        _p("% of Spend",     s_th),
     ]]
     for cat, total in sorted(category_totals.items(), key=lambda x: x[1], reverse=True):
         pct = (total / grand_total * 100) if grand_total > 0 else 0
         cat_rows.append([
-            Paragraph(cat, s_td_l),
-            Paragraph(f"{total:,.2f}", s_td_c),
-            Paragraph(f"{pct:.1f}%", s_td_c),
+            _p(_e(cat),             s_tdl),
+            _p(f"{total:,.2f}",     s_tdc),
+            _p(f"{pct:.1f}%",       s_tdc),
         ])
     cat_rows.append([
-        Paragraph("Grand Total", s_total),
-        Paragraph(f"&#8377; {grand_total:,.2f}", s_total),
-        Paragraph("100%", s_total),
+        _p("Grand Total",                     s_tot),
+        _p(f"&#8377; {grand_total:,.2f}",     s_tot),
+        _p("100%",                            s_tot),
     ])
 
-    cat_table = Table(cat_rows, colWidths=[8 * cm, 4 * cm, 4 * cm])
+    cat_tbl = Table(cat_rows, colWidths=[8 * cm, 5 * cm, 5 * cm])
     cat_style = [
-        ("BACKGROUND",    (0, 0),  (-1, 0),  NAVY),
+        ("BACKGROUND",    (0,  0), (-1,  0), NAVY),
         ("BACKGROUND",    (0, -1), (-1, -1), NAVY_DARK),
-        ("GRID",           (0, 0),  (-1, -2), 0.5, GRID_CLR),
-        ("LINEABOVE",      (0, -1), (-1, -1), 1.5, NAVY),
-        ("VALIGN",         (0, 0),  (-1, -1), "MIDDLE"),
-        ("LEFTPADDING",    (0, 0),  (-1, -1), 6),
-        ("RIGHTPADDING",   (0, 0),  (-1, -1), 6),
-        ("TOPPADDING",     (0, 0),  (-1, -1), 5),
-        ("BOTTOMPADDING",  (0, 0),  (-1, -1), 5),
+        ("GRID",          (0,  0), (-1, -2), 0.5, GRID),
+        ("LINEABOVE",     (0, -1), (-1, -1), 1.5, NAVY),
+        ("VALIGN",        (0,  0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING",   (0,  0), (-1, -1), 6),
+        ("RIGHTPADDING",  (0,  0), (-1, -1), 6),
+        ("TOPPADDING",    (0,  0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0,  0), (-1, -1), 5),
     ]
     for i in range(1, len(cat_rows) - 1):
         cat_style.append(("BACKGROUND", (0, i), (-1, i),
                           colors.white if i % 2 == 1 else STRIPE))
-    cat_table.setStyle(TableStyle(cat_style))
-    story.append(cat_table)
+    cat_tbl.setStyle(TableStyle(cat_style))
+    story.append(cat_tbl)
     story.append(Spacer(1, 0.8 * cm))
 
     # All transactions detail
-    story.append(Paragraph("All Transactions", s_cat_hdr))
+    story.append(_p("All Transactions", s_cathdr))
 
     det_rows: list[list] = [[
-        Paragraph("Date", s_th),
-        Paragraph("Category", s_th),
-        Paragraph("Note", s_th),
-        Paragraph("Amount (&#8377;)", s_th),
+        _p("Date",             s_th),
+        _p("Category",         s_th),
+        _p("Note",             s_th),
+        _p("Amount (&#8377;)", s_th),
     ]]
     for row in expenses:
         det_rows.append([
-            Paragraph(str(row.get("Date", "")), s_td_c),
-            Paragraph(str(row.get("Category", "")).capitalize(), s_td_c),
-            Paragraph(str(row.get("Note", "")), s_td_l),
-            Paragraph(f"{float(row.get('Amount', 0)):,.2f}", s_td_c),
+            _p(_e(row.get("Date", "")),                           s_tdc),
+            _p(_e(str(row.get("Category", "")).capitalize()),     s_tdc),
+            _p(_e(row.get("Note", "")),                           s_tdl),
+            _p(f"{float(row.get('Amount', 0)):,.2f}",             s_tdc),
         ])
 
-    det_table = Table(det_rows, colWidths=[3 * cm, 3.5 * cm, 6 * cm, 3.5 * cm])
+    det_tbl = Table(det_rows, colWidths=[3 * cm, 3.5 * cm, 7 * cm, 4.5 * cm])
     det_style = [
-        ("BACKGROUND",    (0, 0),  (-1, 0),  NAVY),
-        ("GRID",           (0, 0),  (-1, -1), 0.5, GRID_CLR),
-        ("VALIGN",         (0, 0),  (-1, -1), "MIDDLE"),
-        ("LEFTPADDING",    (0, 0),  (-1, -1), 5),
-        ("RIGHTPADDING",   (0, 0),  (-1, -1), 5),
-        ("TOPPADDING",     (0, 0),  (-1, -1), 4),
-        ("BOTTOMPADDING",  (0, 0),  (-1, -1), 4),
+        ("BACKGROUND",    (0, 0), (-1,  0), NAVY),
+        ("GRID",          (0, 0), (-1, -1), 0.5, GRID),
+        ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING",   (0, 0), (-1, -1), 5),
+        ("RIGHTPADDING",  (0, 0), (-1, -1), 5),
+        ("TOPPADDING",    (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
     ]
     for i in range(1, len(det_rows)):
         det_style.append(("BACKGROUND", (0, i), (-1, i),
                           colors.white if i % 2 == 1 else STRIPE))
-    det_table.setStyle(TableStyle(det_style))
-    story.append(det_table)
+    det_tbl.setStyle(TableStyle(det_style))
+    story.append(det_tbl)
     story.append(Spacer(1, 0.8 * cm))
 
     story.append(HRFlowable(width="100%", thickness=0.5, color=colors.lightgrey))
     story.append(Spacer(1, 0.2 * cm))
-    story.append(Paragraph(f"GroceryBot Expense Tracker &bull; {now.strftime('%Y')}", s_footer))
+    story.append(_p(f"GroceryBot Expense Tracker &bull; {now.strftime('%Y')}", s_foot))
 
     doc.build(story)
-    logger.info("Expense PDF: %s | total=%.2f | rows=%d", tmp.name, grand_total, len(expenses))
+    logger.info(
+        "Expense PDF: %s | total=%.2f | rows=%d",
+        tmp.name, grand_total, len(expenses),
+    )
     return tmp.name
 
 
@@ -498,8 +497,5 @@ def generate_expense_summary_pdf(
 
 
 def generate_bill_pdf(items: list[dict], language: str = "en") -> str:
-    """Backward-compatible alias — delegates to generate_grocery_bill().
-
-    Always generates an English-first grocery bill.
-    """
+    """Backward-compatible alias — delegates to generate_grocery_bill()."""
     return generate_grocery_bill(items, lang="en")
