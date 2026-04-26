@@ -3,26 +3,35 @@
 When a user sends a photo of a receipt/bill:
   1. Download the highest-resolution image.
   2. Extract text via EasyOCR / pytesseract.
-  3. Pass text to the Groq LLM bill parser.
-  4. Generate and send a PDF bill.
-  5. Log the bill to Google Sheets bill history (if configured).
+  3. classify_bill_type() to detect grocery vs service.
+  4. Parse items with Groq LLM.
+  5. Generate appropriate PDF (grocery or service invoice).
+  6. Log the bill to Google Sheets bill history (if configured).
+
+All PDFs are generated in English.
 """
 from __future__ import annotations
 
+import asyncio
 import html as hl
 import logging
 import os
 import tempfile
+from datetime import datetime
 
 from telegram import Update
 from telegram.ext import ContextTypes
 
 from utils.bill_history import bill_history_available, log_bill
 from utils.easyocr_text import extract_text_from_image
-from utils.groq_llm import parse_items
+from utils.groq_llm import classify_bill_type, parse_items
 from utils.lang_store import get_user_lang
 from utils.msgs import m
-from utils.pdf_generator import generate_bill_pdf
+from utils.pdf_generator import (
+    generate_grocery_bill,
+    generate_service_bill,
+    next_service_roll_number,
+)
 from utils.security import rate_limiter
 
 logger = logging.getLogger(__name__)
@@ -81,8 +90,19 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         preview = hl.escape(ocr_text[:120] + ("…" if len(ocr_text) > 120 else ""))
         await status.edit_text(m("photo_ocr_preview", lang, preview=preview), parse_mode="HTML")
 
-        # ── 3. Parse items with LLM ───────────────────────────────────────────
-        items = await parse_items(ocr_text)
+        # ── 3. Parse items + classify bill type in parallel ───────────────────
+        try:
+            items, bill_type = await asyncio.gather(
+                parse_items(ocr_text),
+                classify_bill_type(ocr_text),
+            )
+        except ValueError:
+            await status.edit_text(
+                m("photo_no_items", lang, preview=hl.escape(ocr_text[:300])),
+                parse_mode="HTML",
+            )
+            return
+
         if not items:
             await status.edit_text(
                 m("photo_no_items", lang, preview=hl.escape(ocr_text[:300])),
@@ -90,12 +110,34 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             )
             return
 
+        logger.info("Photo bill_type=%s items=%d", bill_type, len(items))
+
         # ── 4. Generate PDF ───────────────────────────────────────────────────
         await status.edit_text(m("photo_pdf_gen", lang, count=len(items)))
-        pdf_path = generate_bill_pdf(items)
-
         grand_total = sum(float(i.get("qty", 1)) * float(i.get("rate", 0)) for i in items)
-        caption = m("photo_bill_done", lang, total=grand_total)
+
+        if bill_type == "service":
+            shop_name = os.environ.get("SERVICE_SHOP_NAME", "SRI NARPAVI BEAUTY PARLOUR")
+            customer_name = (
+                update.effective_user.first_name
+                or update.effective_user.full_name
+                or "Valued Customer"
+            )
+            now = datetime.now()
+            roll_no = next_service_roll_number(shop_name, now)
+            pdf_path = generate_service_bill(
+                shop_name=shop_name,
+                customer_name=customer_name,
+                services=items,
+                bill_number=roll_no,
+                date_str=now.strftime("%d-%m-%Y"),
+                time_str=now.strftime("%H:%M"),
+            )
+            caption = m("photo_service_bill_done", lang,
+                        shop=hl.escape(shop_name), roll=hl.escape(roll_no), total=grand_total)
+        else:
+            pdf_path = generate_grocery_bill(items, lang="en")
+            caption = m("photo_bill_done", lang, total=grand_total)
 
         try:
             await status.delete()

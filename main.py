@@ -93,6 +93,7 @@ async def _setup(update: Update, context) -> None:
         f"{storage_icon} <b>Watchlist storage:</b> {storage['detail']}",
         _env_status("GOOGLE_API_KEY",                 "Google CSE (Streaming links)", extra_key="GOOGLE_CSE_ID"),
         _env_status("GOOGLE_SHEETS_CREDENTIALS_JSON", "Google Sheets (Expenses + Bill history)", extra_key="GOOGLE_SHEET_ID"),
+        _env_status("YOUTUBE_API_KEY", "YouTube Data API (Full movie button in /movie)"),
         _env_status("WEBHOOK_SECRET", "Webhook Secret (Security)"),
         "",
         "❌ = not configured (feature degraded) | ✅ = configured",
@@ -101,6 +102,8 @@ async def _setup(update: Update, context) -> None:
         "• <b>Watchlist:</b> Set <code>SUPABASE_URL</code> + <code>SUPABASE_KEY</code> (service-role key).",
         "• <b>Streaming links:</b> Set <code>GOOGLE_API_KEY</code> + <code>GOOGLE_CSE_ID</code>.",
         "• <b>Expenses + Bill history:</b> Set <code>GOOGLE_SHEETS_CREDENTIALS_JSON</code> + <code>GOOGLE_SHEET_ID</code>.",
+        "• <b>YouTube Full Movie:</b> Set <code>YOUTUBE_API_KEY</code> (Google Cloud → YouTube Data API v3).",
+        "• <b>Service bill shop name:</b> Set <code>SERVICE_SHOP_NAME</code> (default: SRI NARPAVI BEAUTY PARLOUR).",
         "• <b>Security:</b> Set <code>WEBHOOK_SECRET</code> to a random 32-char hex token.",
     ]
     await update.message.reply_text("\n".join(lines), parse_mode="HTML")

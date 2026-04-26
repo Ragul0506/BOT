@@ -94,6 +94,10 @@ _T: dict[str, dict[str, str]] = {
         "ta": "இதோ உங்க பில்! மொத்தம் &#8377; {total:.0f}.",
         "en": "Here is your bill! Total &#8377; {total:.0f}.",
     },
+    "voice_service_bill_done": {
+        "ta": "&#128136; <b>{shop}</b> Service Invoice!\nRoll No: <b>{roll}</b> | மொத்தம் &#8377; {total:.0f}.",
+        "en": "&#128136; <b>{shop}</b> Service Invoice!\nRoll No: <b>{roll}</b> | Total &#8377; {total:.0f}.",
+    },
     "voice_too_large": {
         "ta": "❌ Audio file too large (max 20 MB). சின்னதா record பண்ணுங்க.",
         "en": "❌ Audio file too large (max 20 MB). Please record a shorter note.",
@@ -150,6 +154,10 @@ _T: dict[str, dict[str, str]] = {
     "photo_bill_done": {
         "ta": "இதோ உங்க பில் (photo-ல் இருந்து). மொத்தம் &#8377; {total:.0f}.",
         "en": "Here is your bill (from photo). Total &#8377; {total:.0f}.",
+    },
+    "photo_service_bill_done": {
+        "ta": "&#128136; <b>{shop}</b> Invoice (photo-ல் இருந்து)!\nRoll No: <b>{roll}</b> | மொத்தம் &#8377; {total:.0f}.",
+        "en": "&#128136; <b>{shop}</b> Invoice (from photo)!\nRoll No: <b>{roll}</b> | Total &#8377; {total:.0f}.",
     },
     "photo_pdf_gen": {
         "ta": "📄 {count} items found. PDF தயாரிக்கிறேன்…",

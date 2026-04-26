@@ -22,6 +22,7 @@ _SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
 # [M4] Cache parsed credentials — avoid re-parsing JSON on every call.
 _creds_cache: dict | None = None
+_gc_failed: bool = False  # True if initialization previously failed
 
 
 def _is_configured() -> bool:
@@ -32,59 +33,63 @@ def _is_configured() -> bool:
 
 
 def _get_gc():
-    """Return an authenticated gspread client (sync, run in executor).
+    """Return an authenticated gspread client, or None if unavailable.
 
-    Raises RuntimeError with a descriptive message on any credential problem
-    so the async callers can catch it and degrade gracefully.
+    Never raises — logs a warning and returns None on any credential problem
+    so callers can degrade gracefully without try/except boilerplate.
     """
-    global _creds_cache
-    import gspread
-    from google.oauth2.service_account import Credentials
-
-    if _creds_cache is None:
-        raw = os.environ.get("GOOGLE_SHEETS_CREDENTIALS_JSON", "").strip()
-        if not raw:
-            raise RuntimeError("GOOGLE_SHEETS_CREDENTIALS_JSON is not set")
-
-        # Accept both the JSON content directly and a file path.
-        if raw.startswith("{"):
-            try:
-                parsed = json.loads(raw)
-            except json.JSONDecodeError as exc:
-                raise RuntimeError(
-                    f"GOOGLE_SHEETS_CREDENTIALS_JSON is not valid JSON: {exc}"
-                ) from exc
-        else:
-            try:
-                with open(raw) as fh:
-                    parsed = json.load(fh)
-            except (OSError, json.JSONDecodeError) as exc:
-                raise RuntimeError(
-                    f"Cannot read service account credentials from '{raw}': {exc}"
-                ) from exc
-
-        if not isinstance(parsed, dict):
-            raise RuntimeError(
-                "Service account credentials must be a JSON object (got "
-                f"{type(parsed).__name__})"
-            )
-
-        required = {"token_uri", "client_email", "private_key"}
-        missing = required - set(parsed.keys())
-        if missing:
-            raise RuntimeError(
-                f"Service account JSON missing required fields: {missing}. "
-                "Ensure GOOGLE_SHEETS_CREDENTIALS_JSON contains the full "
-                "service-account key file content, not just a file path."
-            )
-
-        _creds_cache = parsed
+    global _creds_cache, _gc_failed
+    if _gc_failed:
+        return None  # Already failed once; don't retry until restart.
 
     try:
+        import gspread
+        from google.oauth2.service_account import Credentials
+
+        if _creds_cache is None:
+            raw = os.environ.get("GOOGLE_SHEETS_CREDENTIALS_JSON", "").strip()
+            if not raw:
+                logger.warning("GOOGLE_SHEETS_CREDENTIALS_JSON not set — Sheets unavailable")
+                _gc_failed = True
+                return None
+
+            if raw.startswith("{"):
+                try:
+                    parsed = json.loads(raw)
+                except json.JSONDecodeError as exc:
+                    logger.warning("Invalid JSON in GOOGLE_SHEETS_CREDENTIALS_JSON: %s", exc)
+                    _gc_failed = True
+                    return None
+            else:
+                try:
+                    with open(raw) as fh:
+                        parsed = json.load(fh)
+                except (OSError, json.JSONDecodeError) as exc:
+                    logger.warning("Cannot read service account file '%s': %s", raw, exc)
+                    _gc_failed = True
+                    return None
+
+            if not isinstance(parsed, dict):
+                logger.warning("Credentials JSON must be an object, got %s", type(parsed).__name__)
+                _gc_failed = True
+                return None
+
+            required = {"token_uri", "client_email", "private_key"}
+            missing = required - set(parsed.keys())
+            if missing:
+                logger.warning("Credentials JSON missing fields: %s — check full service-account key", missing)
+                _gc_failed = True
+                return None
+
+            _creds_cache = parsed
+
         creds = Credentials.from_service_account_info(_creds_cache, scopes=_SCOPES)
         return gspread.authorize(creds)
+
     except Exception as exc:
-        raise RuntimeError(f"Failed to authorize Google Sheets client: {exc}") from exc
+        logger.warning("Sheets client init failed: %s", exc)
+        _gc_failed = True
+        return None
 
 
 def _safe_date(value: object, fallback: str) -> str:
@@ -115,6 +120,9 @@ def _get_or_create_worksheet(gc, user_id: str):
 
 def _sync_append(user_id: str, expenses: list[dict]) -> None:
     gc = _get_gc()
+    if gc is None:
+        logger.info("Sheets unavailable — skipping expense append for user %s", user_id)
+        return
     ws = _get_or_create_worksheet(gc, user_id)
     today = str(date.today())
     rows = [
@@ -135,6 +143,8 @@ def _sync_append(user_id: str, expenses: list[dict]) -> None:
 
 def _sync_get_month(user_id: str, year: int, month: int) -> list[dict]:
     gc = _get_gc()
+    if gc is None:
+        return []
     ws = _get_or_create_worksheet(gc, user_id)
     prefix = f"{year}-{month:02d}"
     records = ws.get_all_records()  # skips header automatically

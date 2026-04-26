@@ -1,11 +1,11 @@
 """Groq LLM – all inference helpers (bill parsing, intent classification,
-expense extraction, summarization, language detection)."""
+expense extraction, summarization, language detection, bill type classification)."""
 from __future__ import annotations
 
 import json
 import logging
 import re
-from datetime import date as _date
+from datetime import date as _date, timedelta
 from typing import Literal
 
 from groq import AsyncGroq
@@ -15,7 +15,6 @@ from utils.security import wrap_user_input
 
 logger = logging.getLogger(__name__)
 
-# Env-var override so decommissioned models can be swapped without code changes.
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
 
 _client: AsyncGroq | None = None
@@ -74,119 +73,123 @@ def _extract_json_array(raw: str) -> list[dict]:
 # ── bill parsing ──────────────────────────────────────────────────────────────
 
 _BILL_SYSTEM = """\
-You are a strict billing assistant that parses shopping-list transcripts into structured JSON.
+You are a strict billing assistant that parses shopping-list and service-receipt transcripts into structured JSON.
 The input may be in Tamil (Unicode), English, or Tanglish (Tamil words spelled in English letters).
 
-═══ STRICT PARSING CONTRACT ═══
-Only extract items that have ALL THREE of the following EXPLICITLY stated:
-  1. An identifiable ITEM NAME
-  2. A clear QUANTITY (number + optional unit)
-  3. A clear PRICE (a number in rupees)
+═══ PARSING CONTRACT ═══
+Extract ALL items/services that have an identifiable NAME and a PRICE.
+  • Physical goods (rice, oil, vegetables, etc.): require explicit quantity.
+  • Services (haircut, beauty, tailoring, repair, etc.): default qty=1 if not stated.
 
-If ANY of the three is missing or ambiguous for an item → SKIP that item. Do NOT guess or fill in defaults.
+If transcript has NO parseable items/services → return EXACTLY this object:
+  {"error":"no_valid_items","reason":"<one short sentence>"}
 
-If the transcript contains NO items that satisfy all three conditions (e.g., it is a conversation,
-a to-do list, an expense summary, or simply has no prices) → return EXACTLY this object and nothing else:
-  {"error":"no_valid_items","reason":"<one short sentence explaining why>"}
-
-═══ OUTPUT FORMAT (when valid items are found) ═══
+═══ OUTPUT FORMAT ═══
 Output ONLY a valid JSON array. No markdown fences, no explanation, no extra text.
 Each element must have exactly three fields:
-  - "item"  : product name translated to English (string, Title Case)
-  - "qty"   : quantity as a plain number (integer or decimal, NO units in this field)
+  - "item"  : name translated to English, Title Case
+  - "qty"   : quantity as a plain number (integer or decimal, NO units here)
   - "rate"  : price per unit in rupees as a plain number (NO currency symbols)
 
-═══ VALIDATION — reject these silently ═══
-  • qty > 1000               → nonsensical quantity, skip the item entirely
-  • item name is empty, a single character, or unrecognisable punctuation → skip
+═══ SERVICE HANDLING ═══
+Services: haircut, shave, facial, waxing, threading, manicure, pedicure,
+          spa, massage, tailoring, stitching, dyeing, dry cleaning, repair,
+          eyebrows, cleanup, bleach, hair color, mehendi, pedicure, laundry, alteration
+  • Name + price only (no qty) → set qty=1
+  • "Haircut 200" → {"item":"Haircut","qty":1,"rate":200}
+  • "facial 500, waxing 300" → [{"item":"Facial","qty":1,"rate":500},{"item":"Waxing","qty":1,"rate":300}]
+  • "blouse stitching 150" → {"item":"Blouse Stitching","qty":1,"rate":150}
+
+═══ VALIDATION ═══
+  • qty > 1000 → skip item
+  • item name empty, single character, or unrecognisable punctuation → skip
   • rate looks like a phone number, date, or PIN (>9999 and not a plausible price) → skip
 
-═══ UNIT WORDS TO STRIP from qty ═══
+═══ UNIT WORDS TO STRIP from qty field ═══
   kg, kilo, kilogram, litre, ltr, ml, gram, g, pack, packs, packet, packets,
   piece, pieces, nos, number, bottle, bottles, box, boxes, dozen, set, bundle,
   கிலோ, லிட்டர், கிராம், பாக்கெட், பாட்டில், டஜன்
 
 ═══ TANGLISH → ENGLISH ═══
-  arisi / அரிசி → Rice               paruppu / பருப்பு → Dal
-  thakkali / தக்காளி → Tomato        vengayam / வெங்காயம் → Onion
-  poondu / பூண்டு → Garlic           inji / இஞ்சி → Ginger
-  karuveppilai / கறிவேப்பிலை → Curry Leaves
-  kottamalli / கொத்தமல்லி → Coriander
-  milagai / மிளகாய் → Chilli         milagu / மிளகு → Pepper
-  jeeragam / சீரகம் → Cumin          manja / மஞ்சள் → Turmeric
-  uppu / உப்பு → Salt                rava / ரவை → Semolina
-  maida / sennai → Maida             oil / ennai / எண்ணெய் → Oil
-  paal / பால் → Milk                 thayir / தயிர் → Curd
-  sakkarai / சக்கரை → Sugar          muttai / முட்டை → Egg
-  kozhi / கோழி → Chicken             meen / மீன் → Fish
-  thengai / தெங்காய் → Coconut       urulai / உருளைக்கிழங்கு → Potato
-  vazhai / வாழை → Banana             keerai / கீரை → Greens
+  arisi/அரிசி→Rice       paruppu/பருப்பு→Dal      thakkali/தக்காளி→Tomato
+  vengayam/வெங்காயம்→Onion  poondu/பூண்டு→Garlic    inji/இஞ்சி→Ginger
+  karuveppilai→Curry Leaves  kottamalli→Coriander   milagai→Chilli
+  milagu→Pepper  jeeragam→Cumin  manja→Turmeric  uppu→Salt  rava→Semolina
+  oil/ennai/எண்ணெய்→Oil  paal/பால்→Milk  thayir/தயிர்→Curd
+  sakkarai→Sugar  muttai→Egg  kozhi→Chicken  meen→Fish
+  thengai→Coconut  urulai→Potato  vazhai→Banana  keerai→Greens
+  Salon/Tanglish: kutty cut/hair cut→Hair Cut  dadhi/shave→Shave
+    facial→Facial  waxing→Waxing  threading→Threading  eyebrow→Eyebrow
+  Tailoring: stitching/stich→Stitching  blouse→Blouse
 
 PRICE WORDS: rupees, rupe, rs, ரூபாய், ரூ, ₹, /-, per
-BRAND NAMES: Keep recognisable brand abbreviations as-is (RR, MDH, Aachi, Tata, Amul, etc.)
+BRAND NAMES: Keep brand abbreviations as-is (RR, MDH, Aachi, Tata, Amul, etc.)
 
 ═══ FEW-SHOT EXAMPLES ═══
 
-Example 1 — Tanglish with units:
-Input:  "2 kg arisi 80 rupees, 1 litre oil 160 rupees, 3 pack biscuit 90"
+Example 1 — Grocery Tanglish:
+Input:  "2 kg arisi 80 rupees, 1 litre oil 160, 3 pack biscuit 90"
 Output: [{"item":"Rice","qty":2,"rate":80},{"item":"Oil","qty":1,"rate":160},{"item":"Biscuit","qty":3,"rate":90}]
 
-Example 2 — Tamil Unicode:
-Input:  "2 கிலோ வெங்காயம் 40, அரை கிலோ தக்காளி 25, 1 லிட்டர் பால் 56 ரூபாய்"
-Output: [{"item":"Onion","qty":2,"rate":40},{"item":"Tomato","qty":0.5,"rate":25},{"item":"Milk","qty":1,"rate":56}]
+Example 2 — Salon services (no qty given):
+Input:  "Haircut 200, shave 100"
+Output: [{"item":"Haircut","qty":1,"rate":200},{"item":"Shave","qty":1,"rate":100}]
 
-Example 3 — Tamil/English mixed with brand name:
-Input:  "2 சதங்கள் ஆர்ஆர் மசாலா 144, 500 gram paruppu 65 rupees, 1 packet Aachi sambar 45"
-Output: [{"item":"RR Masala","qty":2,"rate":144},{"item":"Dal","qty":500,"rate":65},{"item":"Aachi Sambar Powder","qty":1,"rate":45}]
+Example 3 — Beauty parlour mixed:
+Input:  "facial 500, waxing 300, threading 50, eyebrows 30"
+Output: [{"item":"Facial","qty":1,"rate":500},{"item":"Waxing","qty":1,"rate":300},{"item":"Threading","qty":1,"rate":50},{"item":"Eyebrows","qty":1,"rate":30}]
 
-Example 4 — Word quantities:
-Input:  "half kg sugar 40 rupees, one dozen eggs 90, 2 bottles coconut oil 250 each"
-Output: [{"item":"Sugar","qty":0.5,"rate":40},{"item":"Egg","qty":12,"rate":90},{"item":"Coconut Oil","qty":2,"rate":250}]
+Example 4 — Tailoring services:
+Input:  "blouse stitching 150, saree fall 50"
+Output: [{"item":"Blouse Stitching","qty":1,"rate":150},{"item":"Saree Fall","qty":1,"rate":50}]
 
-Example 5 — Tanglish voice note:
-Input:  "rendu kilo arisi 80 le, onnu litre paal 56, moonnu packet biscuit 30 rubaa"
-Output: [{"item":"Rice","qty":2,"rate":80},{"item":"Milk","qty":1,"rate":56},{"item":"Biscuit","qty":3,"rate":30}]
+Example 5 — Tanglish salon (voice):
+Input:  "hair cut panninaanga 200 rubaai, eyebrows 50 rupe"
+Output: [{"item":"Hair Cut","qty":1,"rate":200},{"item":"Eyebrows","qty":1,"rate":50}]
 
-Example 6 — Tamil/English mixed, some items lack price → skip those:
+Example 6 — Tamil Unicode grocery:
+Input:  "2 கிலோ வெங்காயம் 40, 1 லிட்டர் பால் 56 ரூபாய்"
+Output: [{"item":"Onion","qty":2,"rate":40},{"item":"Milk","qty":1,"rate":56}]
+
+Example 7 — Word quantities:
+Input:  "half kg sugar 40, one dozen eggs 90"
+Output: [{"item":"Sugar","qty":0.5,"rate":40},{"item":"Egg","qty":12,"rate":90}]
+
+Example 8 — Some items lack price → skip those:
 Input:  "1 kg tomato 30 rupees, vengayam veggies, 2 litre oil 280 rupees"
 Output: [{"item":"Tomato","qty":1,"rate":30},{"item":"Oil","qty":2,"rate":280}]
 
-Example 7 — Expense summary, no per-item prices → error:
-Input:  "I spent 500 on groceries yesterday at the market"
-Output: {"error":"no_valid_items","reason":"Input is a lump-sum expense, not an itemised bill with quantities and prices"}
+Example 9 — Lump-sum expense → error:
+Input:  "I spent 500 on groceries yesterday"
+Output: {"error":"no_valid_items","reason":"Lump-sum expense without itemised prices"}
 
-Example 8 — Tamil shopping to-do list, no prices → error:
-Input:  "வெங்காயம் வாங்கணும், தக்காளி வாங்கணும், பால் வாங்கணும்"
+Example 10 — Shopping to-do list, no prices → error:
+Input:  "வெங்காயம் வாங்கணும், தக்காளி வாங்கணும்"
 Output: {"error":"no_valid_items","reason":"Shopping reminder list with no quantities or prices"}
-
-Example 9 — Nonsensical qty filtered out:
-Input:  "2 kg arisi 60 rupees, 1500 packets salt 10 rupees, 3 litre oil 300"
-Output: [{"item":"Rice","qty":2,"rate":60},{"item":"Oil","qty":3,"rate":300}]
 """
 
 _MAX_VALID_QTY = 1000
 
 
 async def parse_items(transcript: str) -> list[dict]:
-    """Return list of {'item', 'qty', 'rate'} dicts parsed from a shopping transcript.
+    """Return list of {'item', 'qty', 'rate'} dicts parsed from a shopping/service transcript.
 
     Raises ValueError when the transcript contains no parseable bill items.
     """
     raw = await groq_complete(
         _BILL_SYSTEM,
-        f"Parse this shopping list:\n{wrap_user_input(transcript)}",
+        f"Parse this bill/service list:\n{wrap_user_input(transcript)}",
         temperature=0.1,
         max_tokens=1500,
     )
     logger.info("parse_items raw: %s", raw[:300])
 
-    # Detect explicit error object returned by the LLM
     cleaned = re.sub(r"```(?:json)?", "", raw).replace("```", "").strip()
     if cleaned.startswith("{"):
         try:
             err_obj = json.loads(cleaned)
             if err_obj.get("error") == "no_valid_items":
-                reason = err_obj.get("reason", "no valid bill items found")
+                reason = err_obj.get("reason", "no valid items found")
                 logger.warning("parse_items: LLM signalled no_valid_items — %s", reason)
                 raise ValueError(f"No valid bill items: {reason}")
         except json.JSONDecodeError:
@@ -221,13 +224,7 @@ async def parse_items(transcript: str) -> list[dict]:
 
 
 def detect_transcript_language(text: str) -> str:
-    """Return 'ta' if text contains significant Tamil Unicode, else 'en'.
-
-    Tamil Unicode block: U+0B80–U+0BFF.
-    If ≥10 % of alphabetic characters are Tamil script → language is Tamil.
-    Tanglish (Tamil words in English letters) defaults to 'ta' because
-    Whisper usually emits Tamil Unicode for Tamil speech.
-    """
+    """Return 'ta' if text contains significant Tamil Unicode, else 'en'."""
     tamil_chars = sum(1 for c in text if "஀" <= c <= "௿")
     alpha_chars = sum(1 for c in text if c.isalpha())
     if alpha_chars == 0:
@@ -239,7 +236,7 @@ def detect_transcript_language(text: str) -> str:
 
 _INTENT_SYSTEM = """\
 Classify the user's speech into exactly one category:
-- "bill"    : listing items to buy/bought with quantities AND prices (grocery bill, shopping list)
+- "bill"    : listing items to buy/bought with quantities AND prices (grocery bill, shopping list, service receipt)
 - "expense" : reporting money spent on services/activities (fuel, food, travel, utilities, chai)
 - "other"   : does not fit the above two
 
@@ -255,37 +252,113 @@ async def classify_voice_intent(text: str) -> Literal["bill", "expense", "other"
     return word if word in ("bill", "expense") else "other"  # type: ignore[return-value]
 
 
+# ── bill type classification ──────────────────────────────────────────────────
+
+_BILL_TYPE_SYSTEM = """\
+Classify the following bill/receipt text as exactly one type:
+- "grocery"  : contains food items, vegetables, fruits, household groceries, kirana items, supermarket goods,
+               spices, rice, dal, oil, milk, eggs, chicken, fish, snacks, beverages
+- "service"  : contains services like haircut, beauty parlour, salon, facial, waxing, threading, eyebrows,
+               spa, massage, tailoring, stitching, dry cleaning, repair, laundry, dyeing, alteration,
+               manicure, pedicure, mehendi, hair color, bleach, cleanup
+- "other"    : does not clearly fit grocery or service (electronics, medicines, clothing purchase, etc.)
+
+Output ONLY one word: grocery, service, or other. No explanation, no punctuation."""
+
+
+async def classify_bill_type(text: str) -> Literal["grocery", "service", "other"]:
+    """Returns 'grocery', 'service', or 'other' for a given bill/receipt text."""
+    raw = await groq_complete(
+        _BILL_TYPE_SYSTEM,
+        wrap_user_input(text, max_len=500),
+        temperature=0.0,
+        max_tokens=5,
+    )
+    word = raw.strip().lower().split()[0] if raw.strip() else "other"
+    return word if word in ("grocery", "service") else "other"  # type: ignore[return-value]
+
+
 # ── expense parsing ───────────────────────────────────────────────────────────
 
 _EXPENSE_SYSTEM_TPL = """\
-You are an expense tracker. Extract all expense entries from the input text.
-Today's date is {today}. Use today's date if no date is mentioned.
+You are an expense tracker. Extract ALL expense entries from the input text.
+Today is {today}. Yesterday was {yesterday}. Use these exact dates in output.
 
 OUTPUT RULES:
 1. Output ONLY a valid JSON array. No markdown fences, no extra text.
 2. Each element must have exactly four fields:
-   - "date"     : YYYY-MM-DD format
+   - "date"     : YYYY-MM-DD format (use today or yesterday dates above)
    - "amount"   : numeric amount in rupees (no currency symbols)
-   - "category" : one of: food, fuel, transport, medical, utilities, grocery, clothing, entertainment, general
-   - "note"     : short 1–5 word description
+   - "category" : one of: food, fuel, transport, medical, utilities, grocery, clothing, entertainment, personal, family, general
+   - "note"     : short 1-5 word description in English
 
-Category hints:
-  tea/coffee/chai/snack/lunch/dinner/restaurant → food
-  petrol/diesel/fuel/gas → fuel
-  bus/auto/cab/uber/ola/train/flight → transport
-  medicine/hospital/doctor/pharmacy → medical
-  electricity/water/internet/mobile/phone/recharge → utilities
-  vegetable/rice/dal/grocery/supermarket/kirana → grocery
+CATEGORY MAPPING (use the most specific match):
+  food        : tea, coffee, chai, snack, lunch, dinner, restaurant, hotel, tiffin, mess, biryani, sweets, bakery
+  fuel        : petrol, diesel, fuel, gas, bunk, filling
+  transport   : bus, auto, cab, uber, ola, train, flight, metro, ticket, fare
+  medical     : medicine, hospital, doctor, pharmacy, clinic, medical, health, treatment, tablet
+  utilities   : electricity, water, internet, mobile, phone, recharge, bill, wifi, broadband
+  grocery     : vegetable, rice, dal, grocery, supermarket, kirana, market, shopping, provisions, fruits
+  clothing    : dress, saree, shirt, pant, clothes, kurta, jeans, blouse, fabric, footwear, shoes, sandal, leggings, churidar
+  entertainment: movie, cinema, game, concert, fun, outing, park, theatre, amusement
+  personal    : girlfriend, boyfriend, wife, husband, friend, self, beauty, salon, haircut, cosmetics, gift (for non-family)
+  family      : mother, father, mom, dad, amma, appa, parents, brother, sister, son, daughter, child, kids, home, family
+  general     : everything else
 
-Example output: [{{"date":"2024-01-15","amount":200,"category":"food","note":"chai and snacks"}}]
+PATTERN RECOGNITION:
+  "AMOUNT for ITEM"       → ITEM is the note, map to best category
+  "spent AMOUNT on X"     → X is the note, map to best category
+  "ITEM AMOUNT"           → ITEM is note, AMOUNT is rupees
+  "AMOUNT for PERSON"     → girlfriend/friend/self → personal; mother/father/family → family
+  Multiple items in one phrase → extract EACH as a separate entry
+
+═══ FEW-SHOT EXAMPLES ═══
+
+Example 1:
+Input:  "today chai 30 petrol 500"
+Output: [{{"date":"{today}","amount":30,"category":"food","note":"chai"}},{{"date":"{today}","amount":500,"category":"fuel","note":"petrol"}}]
+
+Example 2 — "AMOUNT for CATEGORY" pattern:
+Input:  "today spent dress 2000 5000 for medical 2500 for girlfriend 10000 for mother"
+Output: [
+  {{"date":"{today}","amount":2000,"category":"clothing","note":"dress"}},
+  {{"date":"{today}","amount":5000,"category":"medical","note":"medical"}},
+  {{"date":"{today}","amount":2500,"category":"personal","note":"girlfriend"}},
+  {{"date":"{today}","amount":10000,"category":"family","note":"mother"}}
+]
+
+Example 3 — Mixed dates:
+Input:  "yesterday medicine 200, today lunch 120 and bus 40"
+Output: [
+  {{"date":"{yesterday}","amount":200,"category":"medical","note":"medicine"}},
+  {{"date":"{today}","amount":120,"category":"food","note":"lunch"}},
+  {{"date":"{today}","amount":40,"category":"transport","note":"bus"}}
+]
+
+Example 4 — Relationship expenses:
+Input:  "500 for wife, 200 for friend, 1000 for father"
+Output: [
+  {{"date":"{today}","amount":500,"category":"personal","note":"wife"}},
+  {{"date":"{today}","amount":200,"category":"personal","note":"friend"}},
+  {{"date":"{today}","amount":1000,"category":"family","note":"father"}}
+]
+
+Example 5 — Tanglish:
+Input:  "today petrol 400, lunch 80 rupees, mobile recharge 199"
+Output: [
+  {{"date":"{today}","amount":400,"category":"fuel","note":"petrol"}},
+  {{"date":"{today}","amount":80,"category":"food","note":"lunch"}},
+  {{"date":"{today}","amount":199,"category":"utilities","note":"mobile recharge"}}
+]
 """
 
 
 async def parse_expenses(text: str, today: str = "") -> list[dict]:
     """Return list of {'date', 'amount', 'category', 'note'} expense dicts."""
     today = today or str(_date.today())
+    yesterday = str(_date.fromisoformat(today) - timedelta(days=1))
     raw = await groq_complete(
-        _EXPENSE_SYSTEM_TPL.format(today=today),
+        _EXPENSE_SYSTEM_TPL.format(today=today, yesterday=yesterday),
         f"Extract expenses:\n{wrap_user_input(text)}",
         temperature=0.1,
         max_tokens=1024,

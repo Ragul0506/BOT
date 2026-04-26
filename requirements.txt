@@ -17,6 +17,9 @@ Pillow>=10.0.0
 gspread>=6.0.0
 google-auth>=2.23.0
 
+# ── YouTube Data API v3 (full movie search in /movie) ─────────────────────────
+google-api-python-client>=2.100.0
+
 # ── Supabase (watchlist) ──────────────────────────────────────────────────────
 supabase>=2.0.0
 

@@ -5,6 +5,7 @@ Multi-user isolation: watchlist add uses the calling user's ID.
 """
 from __future__ import annotations
 
+import asyncio
 import html as hl
 import logging
 import re
@@ -17,6 +18,7 @@ from utils.lang_store import get_user_lang
 from utils.msgs import m
 from utils.security import rate_limiter, safe_callback_data
 from utils.tmdb import search_movie
+from utils.youtube_search import search_full_movie, youtube_api_configured
 
 logger = logging.getLogger(__name__)
 
@@ -63,8 +65,8 @@ def _build_caption(movie: dict, links: list[dict], lang: str) -> str:
     return caption
 
 
-def _build_keyboard(movie: dict) -> InlineKeyboardMarkup:
-    """Build inline keyboard; TMDB and Streams buttons always present when URLs valid."""
+def _build_keyboard(movie: dict, yt_full_url: str | None = None) -> InlineKeyboardMarkup:
+    """Build inline keyboard with TMDB, Streams, Trailer, Watchlist, and optional YT Full Movie buttons."""
     row1: list[InlineKeyboardButton] = []
 
     title = movie.get("title", "")
@@ -82,6 +84,9 @@ def _build_keyboard(movie: dict) -> InlineKeyboardMarkup:
     trailer_url = movie.get("trailer_url")
     if trailer_url:
         row2.append(InlineKeyboardButton("🎞️ Trailer", url=trailer_url))
+
+    if yt_full_url:
+        row2.append(InlineKeyboardButton("▶️ YouTube Full Movie", url=yt_full_url))
 
     movie_id = movie.get("id")
     if movie_id and title:
@@ -121,11 +126,23 @@ async def _send_movie(update: Update, movie_name: str) -> None:
             )
             return
 
-        links = await search_streaming_links(movie["title"])
+        # Fetch streaming links and YouTube full movie URL concurrently.
+        yt_full_url: str | None = None
+        if youtube_api_configured():
+            loop = asyncio.get_event_loop()
+            links, yt_full_url = await asyncio.gather(
+                search_streaming_links(movie["title"]),
+                loop.run_in_executor(
+                    None, search_full_movie, movie["title"], str(movie.get("year") or "")
+                ),
+            )
+        else:
+            links = await search_streaming_links(movie["title"])
+
         caption = _build_caption(movie, links, lang)
 
         try:
-            keyboard = _build_keyboard(movie)
+            keyboard = _build_keyboard(movie, yt_full_url=yt_full_url)
         except Exception as exc:
             logger.error("Keyboard build error for '%s': %s", movie_name, exc)
             keyboard = InlineKeyboardMarkup([[]])
