@@ -10,6 +10,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
 from utils.google_search import get_google_search_url, search_streaming_links
+from utils.security import rate_limiter, safe_callback_data
 from utils.tmdb import search_movie
 
 logger = logging.getLogger(__name__)
@@ -64,7 +65,9 @@ def _build_keyboard(movie: dict) -> InlineKeyboardMarkup:
     row2.append(
         InlineKeyboardButton(
             "➕ Watchlist",
-            callback_data=f"wl_add:{movie['id']}:{hl.escape(movie['title'])[:30]}",
+            # [H3] Use safe_callback_data to enforce 64-byte limit and strip
+            # unsafe characters. Never embed html.escape() output in callback_data.
+            callback_data=safe_callback_data("wl_add", movie["id"], movie["title"]),
         )
     )
     rows = [row1]
@@ -75,6 +78,14 @@ def _build_keyboard(movie: dict) -> InlineKeyboardMarkup:
 
 async def _send_movie(update: Update, movie_name: str) -> None:
     msg = update.message
+
+    # [C4] Rate limit movie lookups (TMDB + Google CSE calls).
+    if not rate_limiter.is_allowed(update.effective_user.id):
+        await msg.reply_text(
+            "⏳ கொஞ்சம் slow பண்ணுங்க! சற்று நேரம் கழிச்சு மீண்டும் try பண்ணுங்க."
+        )
+        return
+
     status = await msg.reply_text(
         f"🔍 '<b>{hl.escape(movie_name)}</b>' தேடுகிறேன்…",
         parse_mode="HTML",
@@ -113,8 +124,9 @@ async def _send_movie(update: Update, movie_name: str) -> None:
     except Exception as exc:
         logger.error("Movie handler error: %s", exc, exc_info=True)
         try:
+            # [H2] Never expose raw exception to users.
             await status.edit_text(
-                f"❌ <b>Error:</b> {hl.escape(str(exc))}", parse_mode="HTML"
+                "😕 Movie தேட முடியல! கொஞ்சம் நேரம் கழிச்சு மீண்டும் try பண்ணுங்க."
             )
         except Exception:
             pass
@@ -142,15 +154,25 @@ async def handle_movie_watchlist_callback(
     uid = update.effective_user.id
 
     try:
-        # Fetch a light result to get poster_url
+        # Fetch a light result to get poster_url.
+        # [M1] Use TMDB search result's title rather than blindly trusting
+        # the title embedded in callback_data (which could be truncated or tampered).
         results = await search_movies_multi(title, n=1)
-        poster_url = results[0].get("poster_url") if results else None
+        if results:
+            authoritative_title = results[0].get("title", title)
+            poster_url = results[0].get("poster_url")
+        else:
+            authoritative_title = title
+            poster_url = None
 
-        await add_to_watchlist(uid, movie_id, title, poster_url)
-        await query.answer(f"✅ '{title[:30]}' watchlist-ல் add ஆச்சு!", show_alert=False)
+        await add_to_watchlist(uid, movie_id, authoritative_title, poster_url)
+        await query.answer(
+            f"✅ '{authoritative_title[:30]}' watchlist-ல் add ஆச்சு!", show_alert=False
+        )
     except Exception as exc:
         logger.error("wl_add callback error: %s", exc)
-        await query.answer(f"❌ Error: {str(exc)[:60]}", show_alert=True)
+        # [H2] Do not expose exception details in callback answer.
+        await query.answer("❌ Watchlist-ல் add பண்ண முடியல! மீண்டும் try பண்ணுங்க.", show_alert=True)
 
 
 # ── PTB handler entry-points ──────────────────────────────────────────────────

@@ -23,6 +23,10 @@ services:
       # ── Telegram ────────────────────────────────────────────────────────────
       - key: BOT_TOKEN
         sync: false
+      # Required for webhook signature validation (C1). Generate with:
+      #   python -c "import secrets; print(secrets.token_hex(32))"
+      - key: WEBHOOK_SECRET
+        sync: false
       # ── Groq (Whisper + LLM) ────────────────────────────────────────────────
       - key: GROQ_API_KEY
         sync: false

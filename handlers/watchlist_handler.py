@@ -94,8 +94,9 @@ async def _show_list(update: Update) -> None:
         keyboard = _watchlist_keyboard(entries)
         await status.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
     except Exception as exc:
-        logger.error("Watchlist list error: %s", exc)
-        await status.edit_text(f"❌ Error: {hl.escape(str(exc))}", parse_mode="HTML")
+        logger.error("Watchlist list error: %s", exc, exc_info=True)
+        # [H2] Generic error — no internal details to user.
+        await status.edit_text("😕 Watchlist load பண்ண முடியல! மீண்டும் try பண்ணுங்க.")
 
 
 async def _add_movie(update: Update, movie_name: str) -> None:
@@ -120,8 +121,8 @@ async def _add_movie(update: Update, movie_name: str) -> None:
             parse_mode="HTML",
         )
     except Exception as exc:
-        logger.error("Watchlist add error: %s", exc)
-        await status.edit_text(f"❌ Error: {hl.escape(str(exc))}", parse_mode="HTML")
+        logger.error("Watchlist add error: %s", exc, exc_info=True)
+        await status.edit_text("😕 Watchlist-ல் add பண்ண முடியல! மீண்டும் try பண்ணுங்க.")
 
 
 async def _remove_by_index(update: Update, n: int) -> None:
@@ -140,8 +141,10 @@ async def _remove_by_index(update: Update, n: int) -> None:
             parse_mode="HTML",
         )
     except Exception as exc:
-        logger.error("Watchlist remove error: %s", exc)
-        await update.effective_message.reply_text(f"❌ Error: {hl.escape(str(exc))}", parse_mode="HTML")
+        logger.error("Watchlist remove error: %s", exc, exc_info=True)
+        await update.effective_message.reply_text(
+            "😕 Remove பண்ண முடியல! மீண்டும் try பண்ணுங்க."
+        )
 
 
 # ── callback: remove via inline button ───────────────────────────────────────
@@ -169,8 +172,9 @@ async def handle_watchlist_callback(
         keyboard = _watchlist_keyboard(entries)
         await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
     except Exception as exc:
-        logger.error("Watchlist callback error: %s", exc)
+        logger.error("Watchlist callback error: %s", exc, exc_info=True)
         try:
-            await query.edit_message_text(f"❌ Error: {hl.escape(str(exc))}", parse_mode="HTML")
+            # [H2] Generic error — no internal details to user.
+            await query.edit_message_text("😕 Remove பண்ண முடியல! மீண்டும் try பண்ணுங்க.")
         except Exception:
             pass

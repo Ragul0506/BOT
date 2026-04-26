@@ -34,6 +34,9 @@ BOT_TOKEN: str = os.environ["BOT_TOKEN"]
 WEBHOOK_BASE: str = os.environ.get("RENDER_EXTERNAL_URL", "").rstrip("/")
 PORT: int = int(os.environ.get("PORT", 8443))
 WEBHOOK_PATH = "/webhook"
+# Set WEBHOOK_SECRET in Render dashboard to prevent spoofed webhook requests.
+# Telegram will send X-Telegram-Bot-Api-Secret-Token header with every update.
+WEBHOOK_SECRET: str = os.environ.get("WEBHOOK_SECRET", "")
 
 
 # ── /start ────────────────────────────────────────────────────────────────────
@@ -129,13 +132,26 @@ async def _run_webhook() -> None:
     await ptb.start()
 
     webhook_url = f"{WEBHOOK_BASE}{WEBHOOK_PATH}"
-    await ptb.bot.set_webhook(url=webhook_url, drop_pending_updates=True)
-    logger.info("Webhook → %s", webhook_url)
+    await ptb.bot.set_webhook(
+        url=webhook_url,
+        drop_pending_updates=True,
+        secret_token=WEBHOOK_SECRET or None,
+    )
+    logger.info("Webhook → %s (secret_token=%s)", webhook_url, "set" if WEBHOOK_SECRET else "UNSET")
 
     async def health(_req: web.Request) -> web.Response:
         return web.Response(text="OK")
 
     async def telegram_webhook(req: web.Request) -> web.Response:
+        # [C1] Validate Telegram's secret token to reject spoofed requests.
+        if WEBHOOK_SECRET:
+            provided = req.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+            if provided != WEBHOOK_SECRET:
+                logger.warning(
+                    "Webhook: rejected request with invalid secret token from %s",
+                    req.remote,
+                )
+                return web.Response(status=403, text="Forbidden")
         try:
             payload = await req.json()
             update = Update.de_json(payload, ptb.bot)

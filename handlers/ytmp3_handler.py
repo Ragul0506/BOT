@@ -13,6 +13,7 @@ import os
 from telegram import Update
 from telegram.ext import ContextTypes
 
+from utils.security import ytdl_rate_limiter
 from utils.ytdl_audio import AudioResult, download_audio, extract_yt_url
 
 logger = logging.getLogger(__name__)
@@ -20,6 +21,16 @@ logger = logging.getLogger(__name__)
 
 async def _send_audio(update: Update, url: str) -> None:
     msg = update.effective_message
+    uid = update.effective_user.id
+
+    # [C4] Enforce stricter rate limit for expensive yt-dlp downloads.
+    if not ytdl_rate_limiter.is_allowed(uid):
+        await msg.reply_text(
+            "⏳ YouTube download limit! 5 நிமிடத்தில் 3 மட்டுமே download பண்ணலாம். "
+            "கொஞ்சம் நேரம் கழிச்சு try பண்ணுங்க."
+        )
+        return
+
     status = await msg.reply_text(
         f"⬇️ Audio download பண்றேன்…\n<code>{hl.escape(url[:60])}</code>",
         parse_mode="HTML",
@@ -59,9 +70,10 @@ async def _send_audio(update: Update, url: str) -> None:
 
     except Exception as exc:
         logger.error("YT-MP3 error for %s: %s", url, exc, exc_info=True)
+        # [H2] Do not expose yt-dlp internal error (may contain paths/tokens).
         await status.edit_text(
-            f"❌ Download தடைப்பட்டது:\n<code>{hl.escape(str(exc))}</code>",
-            parse_mode="HTML",
+            "❌ இந்த வீடியோவை பதிவிறக்க முடியாது 😕\n"
+            "Age-restricted, private அல்லது unavailable video-ஆ check பண்ணுங்க.",
         )
 
     finally:

@@ -12,7 +12,25 @@ Supabase setup:
            added_at  TIMESTAMPTZ DEFAULT NOW(),
            UNIQUE (user_id, movie_id)
        );
-  3. Set env vars: SUPABASE_URL and SUPABASE_KEY (anon/service-role key).
+
+       -- [M2] Enable Row Level Security so each user can only access their rows.
+       ALTER TABLE watchlist ENABLE ROW LEVEL SECURITY;
+
+       -- Policy: users can only SELECT their own rows.
+       CREATE POLICY watchlist_select ON watchlist
+           FOR SELECT USING (user_id = current_setting('request.jwt.claims', true)::json->>'sub');
+
+       -- Policy: users can only INSERT rows for themselves.
+       CREATE POLICY watchlist_insert ON watchlist
+           FOR INSERT WITH CHECK (user_id = current_setting('request.jwt.claims', true)::json->>'sub');
+
+       -- Policy: users can only DELETE their own rows.
+       CREATE POLICY watchlist_delete ON watchlist
+           FOR DELETE USING (user_id = current_setting('request.jwt.claims', true)::json->>'sub');
+
+       -- NOTE: Use the Supabase ANON key (not service-role key). The anon key
+       -- respects RLS; the service-role key bypasses all RLS policies.
+  3. Set env vars: SUPABASE_URL and SUPABASE_KEY (use anon key, NOT service-role key).
 
 SQLite fallback:
   When Supabase is not configured the bot stores watchlist in data/watchlist.db.
@@ -81,6 +99,11 @@ def _sync_sb_remove(entry_id: int, user_id: str) -> None:
 
 def _sqlite_conn() -> sqlite3.Connection:
     _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    # [M5] Restrict data directory to owner-only to protect watchlist data.
+    try:
+        _DB_PATH.parent.chmod(0o700)
+    except OSError:
+        pass
     conn = sqlite3.connect(str(_DB_PATH))
     conn.row_factory = sqlite3.Row
     conn.execute(

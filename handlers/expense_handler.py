@@ -22,6 +22,7 @@ from telegram.ext import ContextTypes
 from utils.groq_llm import parse_expenses
 from utils.matplotlib_chart import generate_expense_chart
 from utils.pdf_generator import generate_expense_summary_pdf
+from utils.security import rate_limiter
 from utils.sheets_api import append_expenses, get_month_expenses, sheets_available
 
 logger = logging.getLogger(__name__)
@@ -63,10 +64,10 @@ async def process_expense_text(
             uid = str(update.effective_user.id)
             await append_expenses(uid, expenses)
         except Exception as exc:
-            logger.error("Sheets append error: %s", exc)
+            logger.error("Sheets append error: %s", exc, exc_info=True)
+            # [H2] Do not expose internal error details to the user.
             await _edit(
-                f"⚠️ Sheets save ஆகவில்லை: {hl.escape(str(exc))}\n"
-                "Expenses parsed but not stored."
+                "⚠️ Google Sheets-ல் save ஆகவில்லை. கொஞ்சம் நேரம் கழிச்சு மீண்டும் try பண்ணுங்க."
             )
             return
 
@@ -105,6 +106,14 @@ async def handle_expense_command(
 ) -> None:
     """/expense <description>"""
     msg = update.message
+
+    # [C4] Enforce rate limit.
+    if not rate_limiter.is_allowed(update.effective_user.id):
+        await msg.reply_text(
+            "⏳ கொஞ்சம் slow பண்ணுங்க! சற்று நேரம் கழிச்சு மீண்டும் try பண்ணுங்க."
+        )
+        return
+
     text = " ".join(context.args).strip() if context.args else ""
 
     if not text:
@@ -218,8 +227,9 @@ async def handle_summary_command(
 
     except Exception as exc:
         logger.error("Summary PDF error: %s", exc, exc_info=True)
+        # [H2] Never expose raw exception to users.
         await status.edit_text(
-            f"❌ <b>Error:</b> {hl.escape(str(exc))}", parse_mode="HTML"
+            "😕 Summary generate பண்ண முடியல! கொஞ்சம் நேரம் கழிச்சு மீண்டும் try பண்ணுங்க."
         )
     finally:
         for p in (chart_path, pdf_path):

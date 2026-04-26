@@ -8,6 +8,7 @@ When a user sends a photo of a receipt/bill:
 """
 from __future__ import annotations
 
+import html as hl
 import logging
 import os
 import tempfile
@@ -18,15 +19,25 @@ from telegram.ext import ContextTypes
 from utils.easyocr_text import extract_text_from_image
 from utils.groq_llm import parse_items
 from utils.pdf_generator import generate_bill_pdf
+from utils.security import rate_limiter
 
 logger = logging.getLogger(__name__)
+
+_MAX_PHOTO_BYTES = 10 * 1024 * 1024  # 10 MB
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     msg = update.message
-    status = await msg.reply_text(
-        "📸 Photo கிடைச்சது! OCR பண்றேன்…"
-    )
+    uid = update.effective_user.id
+
+    # [C4] Enforce rate limit before any processing.
+    if not rate_limiter.is_allowed(uid):
+        await msg.reply_text(
+            "⏳ கொஞ்சம் slow பண்ணுங்க! சற்று நேரம் கழிச்சு மீண்டும் try பண்ணுங்க."
+        )
+        return
+
+    status = await msg.reply_text("📸 Photo கிடைச்சது! OCR பண்றேன்…")
 
     image_path: str | None = None
     pdf_path: str | None = None
@@ -35,6 +46,14 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         # ── 1. Download highest-res photo ─────────────────────────────────────
         photo = msg.photo[-1]  # last = largest
         file = await photo.get_file()
+
+        # [H4] Check file size before downloading.
+        if file.file_size and file.file_size > _MAX_PHOTO_BYTES:
+            await status.edit_text(
+                "❌ Photo too large (max 10 MB). சின்னதா compress பண்ணி அனுப்புங்க."
+            )
+            return
+
         with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
             image_path = tmp.name
         await file.download_to_drive(image_path)
@@ -50,7 +69,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             )
             return
 
-        preview = ocr_text[:120] + ("…" if len(ocr_text) > 120 else "")
+        # [H1] HTML-escape OCR output before embedding in HTML message.
+        preview = hl.escape(ocr_text[:120] + ("…" if len(ocr_text) > 120 else ""))
         await status.edit_text(
             f"📝 <b>OCR Text:</b> <i>{preview}</i>\n\nItems parse பண்றேன்…",
             parse_mode="HTML",
@@ -61,7 +81,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         if not items:
             await status.edit_text(
                 f"❌ Items parse ஆகவில்லை.\n\n"
-                f"<b>OCR Text:</b> {ocr_text[:300]}\n\n"
+                f"<b>OCR Text:</b> <i>{hl.escape(ocr_text[:300])}</i>\n\n"
                 "Bill-ல் items + prices இருக்கா என்று check பண்ணுங்க.",
                 parse_mode="HTML",
             )
@@ -90,9 +110,9 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     except Exception as exc:
         logger.error("Photo handler error: %s", exc, exc_info=True)
         try:
+            # [H2] Never expose raw exception to users; log internally only.
             await status.edit_text(
-                f"❌ <b>Error:</b> {exc}\n\nமீண்டும் try பண்ணுங்க.",
-                parse_mode="HTML",
+                "😕 Photo process பண்ண முடியல! கொஞ்சம் நேரம் கழிச்சு மீண்டும் try பண்ணுங்க."
             )
         except Exception:
             pass

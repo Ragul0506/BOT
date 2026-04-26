@@ -22,6 +22,7 @@ from telegram import (
 from telegram.ext import ContextTypes
 
 from utils.google_search import get_google_search_url
+from utils.security import inline_rate_limiter
 from utils.tmdb import search_movies_multi
 
 logger = logging.getLogger(__name__)
@@ -62,6 +63,12 @@ async def handle_inline_query(
     query_text = (update.inline_query.query or "").strip()
 
     if not query_text or len(query_text) < 2:
+        await update.inline_query.answer([], cache_time=0)
+        return
+
+    # [C4][M6] Rate-limit inline queries — they fire on every keystroke.
+    uid = update.inline_query.from_user.id
+    if not inline_rate_limiter.is_allowed(uid):
         await update.inline_query.answer([], cache_time=0)
         return
 

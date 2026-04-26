@@ -14,11 +14,14 @@ import asyncio
 import json
 import logging
 import os
-from datetime import date
+from datetime import date, datetime
 
 logger = logging.getLogger(__name__)
 
 _SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+
+# [M4] Cache parsed credentials — avoid re-parsing JSON on every call.
+_creds_cache: dict | None = None
 
 
 def _is_configured() -> bool:
@@ -30,13 +33,24 @@ def _is_configured() -> bool:
 
 def _get_gc():
     """Return an authenticated gspread client (sync, run in executor)."""
+    global _creds_cache
     import gspread
     from google.oauth2.service_account import Credentials
 
-    raw = os.environ["GOOGLE_SHEETS_CREDENTIALS_JSON"]
-    creds_info = json.loads(raw)
-    creds = Credentials.from_service_account_info(creds_info, scopes=_SCOPES)
+    if _creds_cache is None:
+        _creds_cache = json.loads(os.environ["GOOGLE_SHEETS_CREDENTIALS_JSON"])
+    creds = Credentials.from_service_account_info(_creds_cache, scopes=_SCOPES)
     return gspread.authorize(creds)
+
+
+def _safe_date(value: object, fallback: str) -> str:
+    """[M3] Validate date is YYYY-MM-DD; return fallback if malformed."""
+    try:
+        datetime.strptime(str(value), "%Y-%m-%d")
+        return str(value)
+    except (ValueError, TypeError):
+        logger.warning("Invalid date '%s' from LLM; using today.", value)
+        return fallback
 
 
 def _get_or_create_worksheet(gc, user_id: str):
@@ -58,17 +72,20 @@ def _get_or_create_worksheet(gc, user_id: str):
 def _sync_append(user_id: str, expenses: list[dict]) -> None:
     gc = _get_gc()
     ws = _get_or_create_worksheet(gc, user_id)
+    today = str(date.today())
     rows = [
         [
-            exp.get("date", str(date.today())),
+            # [M3] Validate date format before storing.
+            _safe_date(exp.get("date"), today),
             float(exp.get("amount", 0)),
-            exp.get("category", "general"),
-            exp.get("note", ""),
+            str(exp.get("category", "general")),
+            str(exp.get("note", "")),
         ]
         for exp in expenses
     ]
     if rows:
-        ws.append_rows(rows, value_input_option="USER_ENTERED")
+        # [C3] Use RAW to prevent formula injection (=HYPERLINK, =IMPORTXML, etc.)
+        ws.append_rows(rows, value_input_option="RAW")
     logger.info("Appended %d expense row(s) for user %s", len(rows), user_id)
 
 

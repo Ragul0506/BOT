@@ -11,6 +11,8 @@ from typing import Literal
 from groq import AsyncGroq
 import os
 
+from utils.security import wrap_user_input
+
 logger = logging.getLogger(__name__)
 
 _client: AsyncGroq | None = None
@@ -92,7 +94,7 @@ async def parse_items(transcript: str) -> list[dict]:
     """Return list of {'item', 'qty', 'rate'} from a shopping transcript."""
     raw = await groq_complete(
         _BILL_SYSTEM,
-        f"Parse this shopping list:\n{transcript}",
+        f"Parse this shopping list:\n{wrap_user_input(transcript)}",
         temperature=0.1,
     )
     logger.info("parse_items raw: %s", raw[:200])
@@ -120,7 +122,9 @@ Output ONLY one word: bill, expense, or other. No punctuation, no explanation.""
 
 async def classify_voice_intent(text: str) -> Literal["bill", "expense", "other"]:
     """Returns 'bill', 'expense', or 'other'."""
-    raw = await groq_complete(_INTENT_SYSTEM, text, temperature=0.0, max_tokens=5)
+    raw = await groq_complete(
+        _INTENT_SYSTEM, wrap_user_input(text, max_len=500), temperature=0.0, max_tokens=5
+    )
     word = raw.strip().lower().split()[0] if raw.strip() else "other"
     return word if word in ("bill", "expense") else "other"  # type: ignore[return-value]
 
@@ -156,7 +160,7 @@ async def parse_expenses(text: str, today: str = "") -> list[dict]:
     today = today or str(_date.today())
     raw = await groq_complete(
         _EXPENSE_SYSTEM_TPL.format(today=today),
-        f"Extract expenses:\n{text}",
+        f"Extract expenses:\n{wrap_user_input(text)}",
         temperature=0.1,
         max_tokens=1024,
     )
@@ -188,10 +192,9 @@ Use • as the bullet character. Be direct. No preamble, no conclusion sentence.
 
 async def summarize_text(text: str) -> str:
     """Summarize text into 3–5 bullet points."""
-    truncated = text[:4000]
     return await groq_complete(
         _SUMMARIZE_SYSTEM,
-        f"Summarize:\n{truncated}",
+        f"Summarize:\n{wrap_user_input(text, max_len=4000)}",
         temperature=0.3,
         max_tokens=512,
     )
