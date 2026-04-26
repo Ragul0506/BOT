@@ -71,90 +71,104 @@ def _extract_json_array(raw: str) -> list[dict]:
 # ── bill parsing ──────────────────────────────────────────────────────────────
 
 _BILL_SYSTEM = """\
-You are a billing assistant that parses shopping-list transcripts into structured JSON.
+You are a strict billing assistant that parses shopping-list transcripts into structured JSON.
 The input may be in Tamil (Unicode), English, or Tanglish (Tamil words spelled in English letters).
 
-OUTPUT RULES — follow exactly:
-1. Output ONLY a valid JSON array. No explanation, no markdown fences, no extra text.
-2. Each element must have exactly three fields:
-   - "item"  : product name translated to English (string, Title Case)
-   - "qty"   : quantity as a plain number (integer or decimal, NO units in this field)
-   - "rate"  : price per unit in rupees as a plain number (NO currency symbols)
+═══ STRICT PARSING CONTRACT ═══
+Only extract items that have ALL THREE of the following EXPLICITLY stated:
+  1. An identifiable ITEM NAME
+  2. A clear QUANTITY (number + optional unit)
+  3. A clear PRICE (a number in rupees)
 
-UNIT WORDS TO STRIP from qty (do not include in the number):
+If ANY of the three is missing or ambiguous for an item → SKIP that item. Do NOT guess or fill in defaults.
+
+If the transcript contains NO items that satisfy all three conditions (e.g., it is a conversation,
+a to-do list, an expense summary, or simply has no prices) → return EXACTLY this object and nothing else:
+  {"error":"no_valid_items","reason":"<one short sentence explaining why>"}
+
+═══ OUTPUT FORMAT (when valid items are found) ═══
+Output ONLY a valid JSON array. No markdown fences, no explanation, no extra text.
+Each element must have exactly three fields:
+  - "item"  : product name translated to English (string, Title Case)
+  - "qty"   : quantity as a plain number (integer or decimal, NO units in this field)
+  - "rate"  : price per unit in rupees as a plain number (NO currency symbols)
+
+═══ VALIDATION — reject these silently ═══
+  • qty > 1000               → nonsensical quantity, skip the item entirely
+  • item name is empty, a single character, or unrecognisable punctuation → skip
+  • rate looks like a phone number, date, or PIN (>9999 and not a plausible price) → skip
+
+═══ UNIT WORDS TO STRIP from qty ═══
   kg, kilo, kilogram, litre, ltr, ml, gram, g, pack, packs, packet, packets,
   piece, pieces, nos, number, bottle, bottles, box, boxes, dozen, set, bundle,
   கிலோ, லிட்டர், கிராம், பாக்கெட், பாட்டில், டஜன்
 
-TANGLISH → ENGLISH TRANSLATIONS (common grocery items):
-  arisi / அரிசி → Rice
-  paruppu / பருப்பு → Dal / Lentils
-  thakkali / தக்காளி → Tomato
-  vengayam / வெங்காயம் → Onion
-  poondu / பூண்டு → Garlic
-  inji / இஞ்சி → Ginger
+═══ TANGLISH → ENGLISH ═══
+  arisi / அரிசி → Rice               paruppu / பருப்பு → Dal
+  thakkali / தக்காளி → Tomato        vengayam / வெங்காயம் → Onion
+  poondu / பூண்டு → Garlic           inji / இஞ்சி → Ginger
   karuveppilai / கறிவேப்பிலை → Curry Leaves
   kottamalli / கொத்தமல்லி → Coriander
-  milagai / மிளகாய் → Chilli
-  milagu / மிளகு → Pepper
-  jeeragam / சீரகம் → Cumin
-  manja / மஞ்சள் → Turmeric
-  uppu / உப்பு → Salt
-  sennai / சென்னை → Wheat Flour (Maida)
-  maida → Maida / All-purpose Flour
-  rava / ரவை → Semolina (Rava)
-  sooji → Semolina
-  oil / ennai / எண்ணெய் → Oil
-  soap / sabun → Soap
-  shampoo → Shampoo
-  biscuit / biscuit → Biscuit
-  bread → Bread
-  egg / muttai / முட்டை → Egg
-  chicken / kozhi / கோழி → Chicken
-  fish / meen / மீன் → Fish
-  milk / paal / பால் → Milk
-  curd / thayir / தயிர் → Curd / Yogurt
-  sugar / sakkarai / சக்கரை → Sugar
-  coffee → Coffee Powder
-  tea / theneer / தேநீர் → Tea / Tea Powder
-  detergent → Detergent
-  veggies / keerai / கீரை → Greens / Spinach
-  potato / urulai / உருளைக்கிழங்கு → Potato
-  banana / vazhai / வாழை → Banana
-  coconut / thengai / தெங்காய் → Coconut
+  milagai / மிளகாய் → Chilli         milagu / மிளகு → Pepper
+  jeeragam / சீரகம் → Cumin          manja / மஞ்சள் → Turmeric
+  uppu / உப்பு → Salt                rava / ரவை → Semolina
+  maida / sennai → Maida             oil / ennai / எண்ணெய் → Oil
+  paal / பால் → Milk                 thayir / தயிர் → Curd
+  sakkarai / சக்கரை → Sugar          muttai / முட்டை → Egg
+  kozhi / கோழி → Chicken             meen / மீன் → Fish
+  thengai / தெங்காய் → Coconut       urulai / உருளைக்கிழங்கு → Potato
+  vazhai / வாழை → Banana             keerai / கீரை → Greens
 
 PRICE WORDS: rupees, rupe, rs, ரூபாய், ரூ, ₹, /-, per
-
 BRAND NAMES: Keep recognisable brand abbreviations as-is (RR, MDH, Aachi, Tata, Amul, etc.)
 
-FEW-SHOT EXAMPLES:
+═══ FEW-SHOT EXAMPLES ═══
 
-Example 1 (Tanglish with units):
-Input: "2 kg arisi 80 rupees, 1 litre oil 160 rupees, 3 pack biscuit 90"
+Example 1 — Tanglish with units:
+Input:  "2 kg arisi 80 rupees, 1 litre oil 160 rupees, 3 pack biscuit 90"
 Output: [{"item":"Rice","qty":2,"rate":80},{"item":"Oil","qty":1,"rate":160},{"item":"Biscuit","qty":3,"rate":90}]
 
-Example 2 (Tamil Unicode with mixed prices):
-Input: "2 கிலோ வெங்காயம் 40, அரை கிலோ தக்காளி 25, 1 லிட்டர் பால் 56 ரூபாய்"
+Example 2 — Tamil Unicode:
+Input:  "2 கிலோ வெங்காயம் 40, அரை கிலோ தக்காளி 25, 1 லிட்டர் பால் 56 ரூபாய்"
 Output: [{"item":"Onion","qty":2,"rate":40},{"item":"Tomato","qty":0.5,"rate":25},{"item":"Milk","qty":1,"rate":56}]
 
-Example 3 (Mixed Tamil/English with brand name):
-Input: "2 சதங்கள் ஆர்ஆர் மசாலா 144, 500 gram paruppu 65 rupees, 1 packet Aachi sambar 45"
+Example 3 — Tamil/English mixed with brand name:
+Input:  "2 சதங்கள் ஆர்ஆர் மசாலா 144, 500 gram paruppu 65 rupees, 1 packet Aachi sambar 45"
 Output: [{"item":"RR Masala","qty":2,"rate":144},{"item":"Dal","qty":500,"rate":65},{"item":"Aachi Sambar Powder","qty":1,"rate":45}]
 
-Example 4 (Quantities in different forms):
-Input: "half kg sugar 40, one dozen eggs 90, 2 bottles coconut oil 250 each"
+Example 4 — Word quantities:
+Input:  "half kg sugar 40 rupees, one dozen eggs 90, 2 bottles coconut oil 250 each"
 Output: [{"item":"Sugar","qty":0.5,"rate":40},{"item":"Egg","qty":12,"rate":90},{"item":"Coconut Oil","qty":2,"rate":250}]
 
-Example 5 (Tanglish voice note style):
-Input: "rendu kilo arisi thayir 80 le, onnu litre milk 56, moonnu packet biscuit 30 rubaa"
+Example 5 — Tanglish voice note:
+Input:  "rendu kilo arisi 80 le, onnu litre paal 56, moonnu packet biscuit 30 rubaa"
 Output: [{"item":"Rice","qty":2,"rate":80},{"item":"Milk","qty":1,"rate":56},{"item":"Biscuit","qty":3,"rate":30}]
 
-If a price cannot be determined, use 0. If quantity cannot be determined, use 1.
+Example 6 — Tamil/English mixed, some items lack price → skip those:
+Input:  "1 kg tomato 30 rupees, vengayam veggies, 2 litre oil 280 rupees"
+Output: [{"item":"Tomato","qty":1,"rate":30},{"item":"Oil","qty":2,"rate":280}]
+
+Example 7 — Expense summary, no per-item prices → error:
+Input:  "I spent 500 on groceries yesterday at the market"
+Output: {"error":"no_valid_items","reason":"Input is a lump-sum expense, not an itemised bill with quantities and prices"}
+
+Example 8 — Tamil shopping to-do list, no prices → error:
+Input:  "வெங்காயம் வாங்கணும், தக்காளி வாங்கணும், பால் வாங்கணும்"
+Output: {"error":"no_valid_items","reason":"Shopping reminder list with no quantities or prices"}
+
+Example 9 — Nonsensical qty filtered out:
+Input:  "2 kg arisi 60 rupees, 1500 packets salt 10 rupees, 3 litre oil 300"
+Output: [{"item":"Rice","qty":2,"rate":60},{"item":"Oil","qty":3,"rate":300}]
 """
+
+_MAX_VALID_QTY = 1000
 
 
 async def parse_items(transcript: str) -> list[dict]:
-    """Return list of {'item', 'qty', 'rate'} from a shopping transcript."""
+    """Return list of {'item', 'qty', 'rate'} dicts parsed from a shopping transcript.
+
+    Raises ValueError when the transcript contains no parseable bill items.
+    """
     raw = await groq_complete(
         _BILL_SYSTEM,
         f"Parse this shopping list:\n{wrap_user_input(transcript)}",
@@ -162,15 +176,42 @@ async def parse_items(transcript: str) -> list[dict]:
         max_tokens=1500,
     )
     logger.info("parse_items raw: %s", raw[:300])
+
+    # Detect explicit error object returned by the LLM
+    cleaned = re.sub(r"```(?:json)?", "", raw).replace("```", "").strip()
+    if cleaned.startswith("{"):
+        try:
+            err_obj = json.loads(cleaned)
+            if err_obj.get("error") == "no_valid_items":
+                reason = err_obj.get("reason", "no valid bill items found")
+                logger.warning("parse_items: LLM signalled no_valid_items — %s", reason)
+                raise ValueError(f"No valid bill items: {reason}")
+        except json.JSONDecodeError:
+            pass
+
     result = _extract_json_array(raw)
-    return [
-        {
-            "item": str(i.get("item", "Unknown")),
-            "qty": float(i.get("qty", 1)),
-            "rate": float(i.get("rate", 0)),
-        }
-        for i in result
-    ]
+
+    validated: list[dict] = []
+    for i in result:
+        item_name = str(i.get("item", "")).strip()
+        if not item_name or item_name.lower() in ("unknown", ""):
+            logger.debug("parse_items: skipping item with empty/unknown name")
+            continue
+        try:
+            qty = float(i.get("qty", 1))
+            rate = float(i.get("rate", 0))
+        except (TypeError, ValueError):
+            logger.debug("parse_items: skipping %r — non-numeric qty/rate", item_name)
+            continue
+        if qty > _MAX_VALID_QTY:
+            logger.warning("parse_items: skipping %r — qty %.0f exceeds %d", item_name, qty, _MAX_VALID_QTY)
+            continue
+        validated.append({"item": item_name, "qty": qty, "rate": rate})
+
+    if not validated:
+        raise ValueError("No valid bill items could be parsed from the transcript")
+
+    return validated
 
 
 # ── language detection (script-based, no extra API call) ─────────────────────

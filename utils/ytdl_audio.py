@@ -1,7 +1,7 @@
 """yt-dlp audio downloader — downloads best audio and converts to MP3.
 
 Requires:
-  pip install yt-dlp
+  pip install yt-dlp>=2024.12.13
   apt-get install ffmpeg   (for MP3 conversion; already in Dockerfile)
 
 Key design decisions vs original:
@@ -13,6 +13,10 @@ Key design decisions vs original:
   - If ffmpeg post-processing fails (no .mp3 produced), falls back to
     sending the raw audio file (m4a / webm / opus).
   - noplaylist=True prevents accidental playlist downloads.
+  - Three-tier download strategy:
+      1. Chrome browser cookies + tv_embedded client (best: handles age-gated)
+      2. tv_embedded client only (headless / Docker — no browser installed)
+      3. Generic extractor (last resort for non-standard / embedded URLs)
 """
 from __future__ import annotations
 
@@ -192,42 +196,84 @@ class AudioResult:
 
 # ── sync downloader ───────────────────────────────────────────────────────────
 
+# Keywords that suggest a Chrome cookie extraction problem (not a YouTube error)
+_COOKIE_ERR_HINTS = (
+    "cookie", "chrome", "browser", "keyring",
+    "unable to load cookies", "could not find",
+)
+# Errors where trying a different strategy definitely won't help
+_DEFINITIVE_FAIL_HINTS = ("private video", "copyright")
+
 
 def _sync_download(url: str, out_dir: str) -> AudioResult:
     import yt_dlp  # type: ignore[import]
 
     ytdl_log = _YTDLLogger()
 
-    ydl_opts: dict = {
-        # Prefer M4A (excellent ffmpeg support) → any webm → any best audio
-        "format": "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best",
-        # Fixed filename avoids issues with exotic Unicode titles
-        "outtmpl": os.path.join(out_dir, "audio.%(ext)s"),
-        "postprocessors": [
-            {
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": "mp3",
-                "preferredquality": "128",
-            }
-        ],
-        "noplaylist": True,
-        "max_filesize": MAX_BYTES,
-        "socket_timeout": 30,
-        "retries": 3,
-        "logger": ytdl_log,
-        "quiet": True,
-    }
+    def _opts(**extra) -> dict:
+        """Build a complete ydl_opts dict, merging any *extra* keys last."""
+        return {
+            # Prefer M4A → webm → any best audio
+            "format": "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best",
+            # Fixed filename avoids issues with exotic Unicode titles
+            "outtmpl": os.path.join(out_dir, "audio.%(ext)s"),
+            "postprocessors": [
+                {
+                    "key": "FFmpegExtractAudio",
+                    "preferredcodec": "mp3",
+                    "preferredquality": "128",
+                }
+            ],
+            "noplaylist": True,
+            "max_filesize": MAX_BYTES,
+            "socket_timeout": 30,
+            "retries": 3,
+            "logger": ytdl_log,
+            "quiet": True,
+            # tv_embedded client is not subject to YouTube's age-gate enforcement
+            "extractor_args": {"youtube": {"player_client": ["tv_embedded", "web"]}},
+            **extra,
+        }
 
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-    except yt_dlp.utils.DownloadError as exc:
-        cat = _categorize(str(exc), ytdl_log.errors)
-        logger.error("yt-dlp DownloadError [%s]: %s", cat, exc)
-        raise YTDLCategoryError(cat, exc) from exc
-    except Exception as exc:
-        logger.error("yt-dlp unexpected error: %s", exc, exc_info=True)
-        raise YTDLCategoryError("unavailable", exc) from exc
+    # Three strategies, tried in order.  Each tuple is (label, opts).
+    attempts = [
+        # 1. Chrome cookies give access to age-restricted and login-gated videos.
+        #    Skipped automatically if Chrome is not installed / profile unreadable.
+        ("chrome-cookies+embedded", _opts(cookiesfrombrowser=("chrome",))),
+        # 2. No cookies — works in headless / Docker environments.
+        ("embedded-only",           _opts()),
+        # 3. Force the generic extractor as a last resort for non-standard URLs.
+        ("generic-extractor",       _opts(force_generic_extractor=True)),
+    ]
+
+    info = None
+    last_exc: Exception | None = None
+
+    for label, attempt_opts in attempts:
+        try:
+            with yt_dlp.YoutubeDL(attempt_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+            logger.info("yt-dlp succeeded [%s]", label)
+            break
+        except yt_dlp.utils.DownloadError as exc:
+            last_exc = exc
+            exc_lower = str(exc).lower()
+            logger.warning("yt-dlp [%s] failed: %s", label, str(exc)[:150])
+            # Private / copyright failures are definitive — other strategies won't help.
+            if any(k in exc_lower for k in _DEFINITIVE_FAIL_HINTS):
+                break
+            # Cookie extraction failure on the first attempt → continue to next strategy.
+            if label == "chrome-cookies+embedded" and any(k in exc_lower for k in _COOKIE_ERR_HINTS):
+                logger.info("Chrome cookies unavailable; trying without cookies")
+        except Exception as exc:
+            last_exc = exc
+            logger.error("yt-dlp [%s] unexpected: %s", label, exc, exc_info=True)
+            break  # Unexpected errors are unlikely to be resolved by changing opts.
+
+    if info is None:
+        cat = _categorize(str(last_exc or ""), ytdl_log.errors)
+        logger.error("yt-dlp all strategies exhausted [%s]: %s", cat, last_exc)
+        raise YTDLCategoryError(cat, last_exc) from last_exc
 
     title: str = info.get("title") or "audio"
     artist: str = info.get("uploader") or info.get("channel") or "Unknown"

@@ -23,7 +23,7 @@ supabase>=2.0.0
 # ── YouTube audio ─────────────────────────────────────────────────────────────
 # Pin to a recent release — yt-dlp updates frequently to track YouTube changes.
 # Bump this version when downloads start failing (sign of YouTube API change).
-yt-dlp>=2024.11.18
+yt-dlp>=2024.12.13
 
 # ── OCR ───────────────────────────────────────────────────────────────────────
 pytesseract>=0.3.10
