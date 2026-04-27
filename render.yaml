@@ -25,3 +25,5 @@ services:
         sync: false
       - key: WEBHOOK_SECRET
         sync: false
+      - key: TZ
+        value: Asia/Kolkata

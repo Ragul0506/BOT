@@ -9,6 +9,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
+
+# ── IST timezone — must happen before any datetime.now() calls ────────────────
+os.environ.setdefault("TZ", "Asia/Kolkata")
+try:
+    time.tzset()   # Unix only; no-op on Windows dev machines
+except AttributeError:
+    pass
 
 from aiohttp import web
 from dotenv import load_dotenv
@@ -41,33 +49,40 @@ WEBHOOK_SECRET: str = os.environ.get("WEBHOOK_SECRET", "")
 
 
 async def _start(update: Update, context) -> None:
+    first = update.effective_user.first_name or "there"
     await update.message.reply_text(
-        "வணக்கம்! 👋 <b>GroceryBot</b> — உங்க AI assistant!\n\n"
-        "🎤 <b>Voice note அனுப்புங்க:</b>\n"
-        "   • Bill: <i>'2 kg sugar 80, 1 oil 160'</i> → PDF bill\n"
-        "   • Expense: <i>'today spent 200 for chai'</i> → Google Sheets-ல் log\n"
-        "   • Service: <i>'Haircut 200 for Ragu, 9876543210'</i> → Invoice PDF\n\n"
-        "🏪 <b>Shop Profile (Service Bills):</b>\n"
-        "   <code>/setshop</code> — shop name, address, GST%, discount%, logo setup\n"
-        "   <code>/listshops</code> — உங்க shops பார்க்க\n"
-        "   <code>/servicebill</code> — manual step-by-step invoice builder\n\n"
-        "🎬 <b>Movies:</b>\n"
-        "   <code>/movie Vikram</code> — poster + trailer + cast + watchlist\n"
-        "   <code>/watchlist add Master</code> — watchlist-ல் save\n\n"
-        "💰 <b>Expenses:</b>\n"
-        "   <code>/expense spent 500 petrol</code> — log expense\n"
-        "   <code>/summary</code> — monthly PDF report\n\n"
-        "🎵 <b>YouTube MP3:</b>\n"
-        "   <code>/ytmp3 &lt;url&gt;</code> or paste a YouTube link\n"
-        "   <code>/uploadcookies</code> — fix bot-detection errors\n\n"
-        "📸 <b>Bill Photo:</b> Send a receipt photo → PDF (handles handwritten bills)\n\n"
-        "📋 <b>Bill History:</b>\n"
-        "   <code>/billhistory</code> — today's bills\n"
-        "   <code>/billhistory yesterday</code> — yesterday's bills\n\n"
-        "📝 <b>Summarize:</b> Reply to any text with <code>/summarize</code>\n\n"
-        "🔍 <b>Inline:</b> Type <code>@YourBot Vikram</code> in any chat\n\n"
-        "⚙️ <code>/setup</code> — check service status\n"
-        "🌐 <code>/language</code> — change reply language",
+        f"👋 வணக்கம் <b>{first}</b>!\n\n"
+        "🚀 <b>Welcome to Ragul's Assistant Warroom!</b>\n"
+        "உங்க personal AI assistant — bills, expenses, movies, music, invoices எல்லாம் ஒரே bot-ல்.\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "📄 <b>Bills &amp; Invoices</b>\n"
+        "   🎤 Voice note → PDF bill (grocery/salon/tailoring/electronics)\n"
+        "   📸 Photo → OCR → PDF bill\n"
+        "   <code>/servicebill</code> — step-by-step manual invoice\n"
+        "   <code>/setshop</code> — shop profile + custom theme\n"
+        "   <code>/listshops</code> — manage your shops\n\n"
+        "💰 <b>Expenses</b>\n"
+        "   🎤 Voice / <code>/expense today chai 30 petrol 500</code>\n"
+        "   <code>/summary</code> — monthly PDF + chart\n\n"
+        "🎬 <b>Movies</b>\n"
+        "   <code>/movie Vikram</code> — poster, trailer, cast, streaming\n"
+        "   <code>/watchlist add Master</code> — save to watchlist\n\n"
+        "🎵 <b>Songs</b>\n"
+        "   <code>/song Kannana Kanne</code> — search &amp; download Tamil MP3\n"
+        "   <code>/ytmp3 &lt;url&gt;</code> — download any YouTube audio\n"
+        "   <code>/uploadcookies</code> — fix YouTube bot errors\n\n"
+        "🔍 <b>More</b>\n"
+        "   <code>/summarize</code> — summarize any text\n"
+        "   <code>/billhistory</code> — today's bill log\n"
+        "   <code>/setup</code> — check service status\n"
+        "   <code>/language</code> — switch Tanglish ↔ English\n\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "🔮 <b>Coming Soon</b>\n"
+        "   • UPI QR code inside invoices\n"
+        "   • Customer history &amp; reminders\n"
+        "   • Inventory management\n"
+        "   • Daily sales summary dashboard\n\n"
+        "Try sending a 🎤 voice note or type /help!",
         parse_mode="HTML",
     )
 
@@ -182,6 +197,7 @@ def _register_handlers(app: Application) -> None:
         handle_listshops,
         handle_shop_callback,
     )
+    from handlers.song_handler import handle_song_callback, handle_song_command
     from handlers.summarize_handler import handle_summarize
     from handlers.voice_handler import handle_voice
     from handlers.watchlist_handler import handle_watchlist_callback, handle_watchlist_command
@@ -207,6 +223,7 @@ def _register_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("summary",      handle_summary_command))
     app.add_handler(CommandHandler("ytmp3",         handle_ytmp3_command))
     app.add_handler(CommandHandler("uploadcookies", handle_uploadcookies_command))
+    app.add_handler(CommandHandler("song",          handle_song_command))
     app.add_handler(CommandHandler("summarize",    handle_summarize))
     app.add_handler(CommandHandler("billhistory",  handle_billhistory_command))
     app.add_handler(CommandHandler("listshops",    handle_listshops))
@@ -239,6 +256,7 @@ def _register_handlers(app: Application) -> None:
     app.add_handler(CallbackQueryHandler(_language_callback,              pattern=r"^lang:"))
     # Shop callbacks: shop_default:<id>  and  shop_select_bill:<id>
     app.add_handler(CallbackQueryHandler(handle_shop_callback,            pattern=r"^shop_"))
+    app.add_handler(CallbackQueryHandler(handle_song_callback,            pattern=r"^song_dl:"))
 
 
 # ── webhook mode ──────────────────────────────────────────────────────────────

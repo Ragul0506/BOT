@@ -259,27 +259,60 @@ async def classify_voice_intent(text: str) -> Literal["bill", "expense", "other"
 # ── bill type classification ──────────────────────────────────────────────────
 
 _BILL_TYPE_SYSTEM = """\
-Classify the following bill/receipt text as exactly one type:
-- "grocery"  : contains food items, vegetables, fruits, household groceries, kirana items, supermarket goods,
-               spices, rice, dal, oil, milk, eggs, chicken, fish, snacks, beverages
-- "service"  : contains services like haircut, beauty parlour, salon, facial, waxing, threading, eyebrows,
-               spa, massage, tailoring, stitching, dry cleaning, repair, laundry, dyeing, alteration,
-               manicure, pedicure, mehendi, hair color, bleach, cleanup
-- "other"    : does not clearly fit grocery or service (electronics, medicines, clothing purchase, etc.)
+Classify the following bill/receipt text into exactly one category.
 
-Output ONLY one word: grocery, service, or other. No explanation, no punctuation."""
+Output ONLY one word from this exact list (no punctuation, no explanation):
+  grocery, salon, tailoring, electronics, general_service, other
+
+Definitions:
+- "grocery"        : food items, vegetables, fruits, household groceries, kirana, supermarket goods,
+                     spices, rice, dal, oil, milk, eggs, chicken, fish, snacks, beverages, provisions
+- "salon"          : beauty parlour — haircut, shave, facial, waxing, threading, eyebrows, spa,
+                     massage, manicure, pedicure, mehendi, hair color, bleach, cleanup, hair treatment,
+                     smoothening, straightening, rebonding, keratin, head bath
+- "tailoring"      : stitching, blouse, pant, shirt, saree fall, alteration, churidar, leggings,
+                     dry cleaning, laundry, dyeing, embroidery, fabric work, hemming, zip, button
+- "electronics"    : mobile repair, laptop, charger, battery replacement, screen replacement,
+                     computer service, tablet, earphone, accessories, AC repair, TV repair,
+                     fridge repair, washing machine service, appliance repair
+- "general_service": any other service — car wash, plumbing, painting, cleaning, tuition,
+                     consulting, printing, photography, vehicle service, carpentry
+- "other"          : unclear or does not fit any of the above
+
+Few-shot examples (input → output):
+"haircut 200, facial 500" → salon
+"blouse stitching 150, saree fall 50" → tailoring
+"mobile screen repair 800" → electronics
+"rice 80, oil 160, tomato 30" → grocery
+"car wash 300" → general_service
+"Haircut 200 for Ragu 9876543210" → salon
+"pant stitching 200, shirt alteration 50" → tailoring
+"laptop battery replacement 1500" → electronics
+"வெங்காயம் 40, பால் 56 ரூபாய்" → grocery
+"waxing 300, threading 50, eyebrows 30" → salon
+"AC gas refill 800, TV repair 500" → electronics
+"saree dyeing 200, dry cleaning 150" → tailoring
+"printing 500, photography 1000" → general_service"""
+
+_VALID_BILL_TYPES = frozenset({"grocery", "salon", "tailoring", "electronics", "general_service"})
 
 
-async def classify_bill_type(text: str) -> Literal["grocery", "service", "other"]:
-    """Returns 'grocery', 'service', or 'other' for a given bill/receipt text."""
+async def classify_bill_type(
+    text: str,
+) -> Literal["grocery", "salon", "tailoring", "electronics", "general_service", "other"]:
+    """Return the specific bill type for a given bill/receipt text.
+
+    Returns one of: 'grocery', 'salon', 'tailoring', 'electronics',
+    'general_service', 'other'.
+    """
     raw = await groq_complete(
         _BILL_TYPE_SYSTEM,
         wrap_user_input(text, max_len=500),
         temperature=0.0,
-        max_tokens=5,
+        max_tokens=10,
     )
     word = raw.strip().lower().split()[0] if raw.strip() else "other"
-    return word if word in ("grocery", "service") else "other"  # type: ignore[return-value]
+    return word if word in _VALID_BILL_TYPES else "other"  # type: ignore[return-value]
 
 
 # ── service detail extraction ─────────────────────────────────────────────────

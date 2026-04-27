@@ -1,14 +1,16 @@
-"""Shop profile management — /setshop (8-step), /listshops.
+"""Shop profile management — /setshop (10-step), /listshops.
 
 Flow for /setshop (ConversationHandler):
-  1. Ask shop name
-  2. Ask address        (skippable)
-  3. Ask phone          (skippable)
-  4. Ask GST percent    (skippable) — NEW
-  5. Ask discount %     (skippable) — NEW
-  6. Ask GST reg. no.   (skippable)
-  7. Ask footer msg     (skippable)
-  8. Ask logo photo     (skippable)
+  1.  Ask shop name
+  2.  Ask shop type       (inline buttons — Grocery/Salon/Tailoring/Electronics/General)
+  3.  Ask address         (skippable)
+  4.  Ask phone           (skippable)
+  5.  Ask GST percent     (skippable)
+  6.  Ask discount %      (skippable)
+  7.  Ask theme colour    (skippable, default #E91E63 pink)
+  8.  Ask GST reg. no.    (skippable)
+  9.  Ask footer msg      (skippable)
+  10. Ask logo photo      (skippable)
   → Save to SQLite via utils.shop_profile
 
 /listshops shows all shops with inline buttons to set default.
@@ -24,6 +26,7 @@ from datetime import datetime
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
+    CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
     ConversationHandler,
@@ -45,14 +48,26 @@ logger = logging.getLogger(__name__)
 # ── ConversationHandler states ────────────────────────────────────────────────
 (
     SHOP_NAME,
+    SHOP_TYPE,      # inline button step — step 2
     SHOP_ADDRESS,
     SHOP_PHONE,
     SHOP_GST_PCT,
     SHOP_DISCOUNT,
+    SHOP_THEME,
     SHOP_GST,
     SHOP_FOOTER,
     SHOP_LOGO,
-) = range(8)
+) = range(10)
+
+_SHOP_TYPE_LABELS: dict[str, str] = {
+    "grocery":         "🏪 Grocery",
+    "salon":           "💇 Salon",
+    "tailoring":       "🧵 Tailoring",
+    "electronics":     "📱 Electronics",
+    "general_service": "🛠️ General Service",
+}
+
+_HEX_COLOR_RE = re.compile(r'^#[0-9A-Fa-f]{6}$')
 
 _SKIP_WORDS = {"skip", "-", "no", "none", "нет"}
 
@@ -93,7 +108,40 @@ async def _got_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         await update.message.reply_text(m("setshop_name_invalid", lang))
         return SHOP_NAME
     context.user_data["_shop_draft"]["shop_name"] = name
-    await update.message.reply_text(m("setshop_ask_address", lang), parse_mode="HTML")
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🏪 Grocery",     callback_data="shoptype_grocery"),
+            InlineKeyboardButton("💇 Salon",        callback_data="shoptype_salon"),
+        ],
+        [
+            InlineKeyboardButton("🧵 Tailoring",   callback_data="shoptype_tailoring"),
+            InlineKeyboardButton("📱 Electronics",  callback_data="shoptype_electronics"),
+        ],
+        [
+            InlineKeyboardButton("🛠️ General Service", callback_data="shoptype_general_service"),
+        ],
+    ])
+    await update.message.reply_text(
+        m("setshop_ask_type", lang), parse_mode="HTML", reply_markup=keyboard
+    )
+    return SHOP_TYPE
+
+
+async def _got_shop_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    uid = update.effective_user.id
+    lang = await get_user_lang(uid)
+
+    raw = (query.data or "").removeprefix("shoptype_")
+    shop_type = raw if raw in _SHOP_TYPE_LABELS else "general_service"
+    context.user_data["_shop_draft"]["shop_type"] = shop_type
+
+    label = _SHOP_TYPE_LABELS[shop_type]
+    await query.edit_message_text(
+        f"✅ Shop type: <b>{label}</b>", parse_mode="HTML"
+    )
+    await query.message.reply_text(m("setshop_ask_address", lang), parse_mode="HTML")
     return SHOP_ADDRESS
 
 
@@ -131,6 +179,28 @@ async def _got_discount_pct(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     lang = await get_user_lang(uid)
     pct = 0.0 if _is_skip(text) else _parse_pct(text)
     context.user_data["_shop_draft"]["discount_percent"] = pct
+    await update.message.reply_text(m("setshop_ask_theme", lang), parse_mode="HTML")
+    return SHOP_THEME
+
+
+async def _got_theme_color(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = (update.message.text or "").strip()
+    uid = update.effective_user.id
+    lang = await get_user_lang(uid)
+
+    if _is_skip(text):
+        color = "#E91E63"
+    else:
+        # Normalise 3-char shorthand (#RGB → #RRGGBB)
+        if re.match(r'^#[0-9A-Fa-f]{3}$', text):
+            text = '#' + text[1]*2 + text[2]*2 + text[3]*2
+        if _HEX_COLOR_RE.match(text):
+            color = text.upper()
+        else:
+            await update.message.reply_text(m("setshop_theme_invalid", lang))
+            return SHOP_THEME
+
+    context.user_data["_shop_draft"]["theme_color"] = color
     await update.message.reply_text(m("setshop_ask_gst", lang), parse_mode="HTML")
     return SHOP_GST
 
@@ -179,6 +249,8 @@ async def _save_shop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         footer=draft.get("footer", ""),
         gst_percent=float(draft.get("gst_percent", 0) or 0),
         discount_percent=float(draft.get("discount_percent", 0) or 0),
+        shop_type=draft.get("shop_type", "general_service"),
+        theme_color=draft.get("theme_color", "#E91E63"),
     )
     shop_name = draft.get("shop_name", "My Shop")
     logger.info("Created shop id=%d name=%r for user=%d", shop_id, shop_name, uid)
@@ -355,6 +427,7 @@ async def _generate_pending_bill(
             discount_amount=discount_amount,
             gst_percent=gst_pct,
             advance=advance,
+            theme_color=shop.get("theme_color") or "#E91E63",
         )
 
         caption = m(
@@ -398,6 +471,9 @@ def get_shop_conversation_handler() -> ConversationHandler:
             SHOP_NAME: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, _got_name),
             ],
+            SHOP_TYPE: [
+                CallbackQueryHandler(_got_shop_type, pattern=r"^shoptype_"),
+            ],
             SHOP_ADDRESS: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, _got_address),
             ],
@@ -411,6 +487,10 @@ def get_shop_conversation_handler() -> ConversationHandler:
             SHOP_DISCOUNT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, _got_discount_pct),
                 MessageHandler(filters.COMMAND, _got_discount_pct),  # /skip
+            ],
+            SHOP_THEME: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, _got_theme_color),
+                MessageHandler(filters.COMMAND, _got_theme_color),  # /skip
             ],
             SHOP_GST: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, _got_gst),

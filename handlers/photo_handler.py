@@ -32,7 +32,9 @@ from utils.pdf_generator import (
     next_service_roll_number,
 )
 from utils.security import rate_limiter
-from utils.shop_profile import list_shops
+from utils.shop_profile import get_shops_by_type, list_shops
+
+_SERVICE_TYPES = frozenset({"salon", "tailoring", "electronics", "general_service"})
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +120,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await status.edit_text(m("photo_pdf_gen", lang, count=len(items)))
 
         # ── 4. Service bill route ─────────────────────────────────────────────
-        if bill_type == "service":
+        if bill_type in _SERVICE_TYPES:
             svc_details = await extract_service_details(ocr_text)
             customer_name = (
                 svc_details.get("customer_name")
@@ -132,7 +134,9 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             voice_gst_pct    = float(svc_details.get("gst_percent", 0) or 0)
             voice_advance    = float(svc_details.get("advance", 0) or 0)
 
-            shops = list_shops(uid)
+            # Prefer shops matching detected type; fallback to all shops
+            matching = get_shops_by_type(uid, bill_type)
+            shops = matching if matching else list_shops(uid)
 
             if len(shops) == 0:
                 shop_name = os.environ.get(
@@ -218,6 +222,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                     discount_amount=discount_amount,
                     gst_percent=gst_pct,
                     advance=voice_advance,
+                    theme_color=shop_data.get("theme_color") or "#E91E63",
                 )
             finally:
                 if logo_path_tmp and os.path.exists(logo_path_tmp):

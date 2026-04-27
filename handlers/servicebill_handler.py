@@ -182,12 +182,13 @@ async def _got_advance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
     # Fetch default shop profile
     shop = get_default_shop(uid)
-    shop_name    = shop["shop_name"]  if shop else os.environ.get("SERVICE_SHOP_NAME", "My Shop")
-    shop_address = shop.get("address", "") if shop else ""
-    shop_phone   = shop.get("phone", "")   if shop else ""
-    shop_gst     = shop.get("gst", "")     if shop else ""
+    shop_name     = shop["shop_name"]  if shop else os.environ.get("SERVICE_SHOP_NAME", "My Shop")
+    shop_address  = shop.get("address", "") if shop else ""
+    shop_phone    = shop.get("phone", "")   if shop else ""
+    shop_gst      = shop.get("gst", "")     if shop else ""
     shop_disc_pct = float(shop.get("discount_percent", 0) or 0) if shop else 0.0
-    shop_footer  = shop.get("footer", "") if shop else ""
+    shop_footer   = shop.get("footer", "") if shop else ""
+    shop_theme    = (shop.get("theme_color") or "#E91E63") if shop else "#E91E63"
 
     # Merge draft values with shop defaults
     gst_pct          = float(draft.get("gst_percent", 0) or 0) or float(shop.get("gst_percent", 0) or 0) if shop else 0.0
@@ -242,6 +243,7 @@ async def _got_advance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             discount_amount=discount_amount,
             gst_percent=gst_pct,
             advance=advance,
+            theme_color=shop_theme,
         )
 
         caption = m(

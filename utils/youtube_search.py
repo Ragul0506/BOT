@@ -25,6 +25,86 @@ def youtube_api_configured() -> bool:
     return bool(os.environ.get("YOUTUBE_API_KEY", "").strip())
 
 
+def _fmt_duration(secs: int) -> str:
+    """Format seconds as M:SS or H:MM:SS string."""
+    if not secs:
+        return ""
+    h, rem = divmod(int(secs), 3600)
+    m, s = divmod(rem, 60)
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+
+def _search_songs_api(query: str, api_key: str, max_results: int = 5) -> list[dict]:
+    from googleapiclient.discovery import build  # type: ignore
+
+    youtube = build("youtube", "v3", developerKey=api_key, cache_discovery=False)
+    req = youtube.search().list(
+        part="snippet",
+        q=query,
+        type="video",
+        maxResults=max_results,
+        fields="items(id/videoId,snippet/title,snippet/channelTitle)",
+    )
+    resp = req.execute()
+    results = []
+    for item in resp.get("items", []):
+        vid = item.get("id", {}).get("videoId", "")
+        title = item.get("snippet", {}).get("title", "")
+        channel = item.get("snippet", {}).get("channelTitle", "")
+        if vid:
+            results.append({"video_id": vid, "title": title, "duration": 0, "channel": channel})
+    return results
+
+
+def _search_songs_ytdlp(query: str, max_results: int = 5) -> list[dict]:
+    """Fallback search using yt-dlp (no API key required)."""
+    import yt_dlp  # type: ignore
+
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "extract_flat": True,
+        "noplaylist": False,
+        "skip_download": True,
+    }
+    search_url = f"ytsearch{max_results}:{query}"
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(search_url, download=False) or {}
+    except Exception as exc:
+        logger.warning("yt-dlp song search failed: %s", exc)
+        return []
+
+    results = []
+    for entry in (info.get("entries") or [])[:max_results]:
+        if not entry:
+            continue
+        vid = entry.get("id") or ""
+        title = entry.get("title") or "Unknown"
+        duration = int(entry.get("duration") or 0)
+        channel = entry.get("uploader") or entry.get("channel") or ""
+        if vid:
+            results.append({"video_id": vid, "title": title, "duration": duration, "channel": channel})
+    return results
+
+
+def search_songs(query: str, max_results: int = 5) -> list[dict]:
+    """Search YouTube for songs. Returns list of {video_id, title, duration, channel}.
+
+    Uses YouTube Data API if YOUTUBE_API_KEY is set, otherwise falls back to yt-dlp.
+    Each result dict: {"video_id": str, "title": str, "duration": int, "channel": str}
+    """
+    api_key = os.environ.get("YOUTUBE_API_KEY", "").strip()
+    if api_key:
+        try:
+            results = _search_songs_api(query, api_key, max_results)
+            if results:
+                return results
+        except Exception as exc:
+            logger.warning("YouTube API song search failed: %s; falling back to yt-dlp", exc)
+    return _search_songs_ytdlp(query, max_results)
+
+
 def search_full_movie(title: str, year: str = "") -> Optional[str]:
     """Search YouTube for a full-length movie upload.
 

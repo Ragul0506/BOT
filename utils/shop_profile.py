@@ -2,7 +2,8 @@
 
 Table: shops
   id, user_id, shop_name, address, phone, gst, logo_file_id,
-  footer, is_default, gst_percent, discount_percent, shop_type, created_at
+  footer, is_default, gst_percent, discount_percent, shop_type,
+  theme_color, created_at
 """
 from __future__ import annotations
 
@@ -57,6 +58,7 @@ def _migrate_db() -> None:
         "ALTER TABLE shops ADD COLUMN gst_percent REAL DEFAULT 0.0",
         "ALTER TABLE shops ADD COLUMN discount_percent REAL DEFAULT 0.0",
         "ALTER TABLE shops ADD COLUMN shop_type TEXT DEFAULT 'service'",
+        "ALTER TABLE shops ADD COLUMN theme_color TEXT DEFAULT '#E91E63'",
     ]
     with _conn() as con:
         for sql in migrations:
@@ -81,6 +83,7 @@ def create_shop(
     gst_percent: float = 0.0,
     discount_percent: float = 0.0,
     shop_type: str = "service",
+    theme_color: str = "#E91E63",
 ) -> int:
     """Create a new shop profile. Returns the new shop's id."""
     footer = footer or "Thank you for your visit!"
@@ -92,10 +95,10 @@ def create_shop(
         cur = con.execute(
             "INSERT INTO shops "
             "(user_id, shop_name, address, phone, gst, logo_file_id, footer, "
-            " is_default, gst_percent, discount_percent, shop_type) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            " is_default, gst_percent, discount_percent, shop_type, theme_color) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (user_id, shop_name, address, phone, gst, logo_file_id, footer,
-             is_default, gst_percent, discount_percent, shop_type),
+             is_default, gst_percent, discount_percent, shop_type, theme_color),
         )
         return cur.lastrowid  # type: ignore[return-value]
 
@@ -147,7 +150,7 @@ def update_shop(shop_id: int, user_id: int, **kwargs) -> bool:
     """Update allowed shop fields. Returns True if a row was updated."""
     allowed = {
         "shop_name", "address", "phone", "gst", "logo_file_id", "footer",
-        "gst_percent", "discount_percent", "shop_type",
+        "gst_percent", "discount_percent", "shop_type", "theme_color",
     }
     updates = {k: v for k, v in kwargs.items() if k in allowed}
     if not updates:
@@ -159,6 +162,17 @@ def update_shop(shop_id: int, user_id: int, **kwargs) -> bool:
             f"UPDATE shops SET {set_clause} WHERE id=? AND user_id=?", values
         )
         return cur.rowcount > 0
+
+
+def get_shops_by_type(user_id: int, shop_type: str) -> list[dict]:
+    """Return shops for user filtered by shop_type, default first."""
+    with _conn() as con:
+        rows = con.execute(
+            "SELECT * FROM shops WHERE user_id=? AND shop_type=? "
+            "ORDER BY is_default DESC, id ASC",
+            (user_id, shop_type),
+        ).fetchall()
+        return [dict(r) for r in rows]
 
 
 def delete_shop(shop_id: int, user_id: int) -> bool:

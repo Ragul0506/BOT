@@ -83,6 +83,45 @@ def _build_doc(path: str) -> SimpleDocTemplate:
     )
 
 
+# ── Theme palette deriver ─────────────────────────────────────────────────────
+
+def _theme_palette(hex_color: str):
+    """Derive 7 ReportLab colors from a single hex theme color.
+
+    Returns: (C_DK, C_MD, C_LT, C_STRIPE, C_ACCENT, C_BORDER, C_SUBTITLE)
+    """
+    raw = (hex_color or "#E91E63").lstrip('#')
+    if len(raw) == 3:
+        raw = raw[0]*2 + raw[1]*2 + raw[2]*2
+    if len(raw) != 6:
+        raw = "E91E63"
+    try:
+        r, g, b = int(raw[0:2], 16), int(raw[2:4], 16), int(raw[4:6], 16)
+    except ValueError:
+        r, g, b = 233, 30, 99  # fallback pink
+
+    def _hc(rr, gg, bb):
+        return colors.HexColor('#{:02X}{:02X}{:02X}'.format(
+            max(0, min(255, rr)), max(0, min(255, gg)), max(0, min(255, bb))
+        ))
+
+    def dk(f):
+        return _hc(int(r * f), int(g * f), int(b * f))
+
+    def lt(f):
+        return _hc(int(r + (255 - r) * f), int(g + (255 - g) * f), int(b + (255 - b) * f))
+
+    return (
+        dk(0.55),      # C_DK     — dark shade  (header band bg, footer text)
+        dk(0.78),      # C_MD     — medium shade (table header, highlight rows)
+        lt(0.85),      # C_LT     — pale pastel  (info box bg, summary bg)
+        lt(0.93),      # C_STRIPE — near-white   (alternate data rows)
+        _hc(r, g, b),  # C_ACCENT — full color   (TAX INVOICE badge, footer line)
+        lt(0.60),      # C_BORDER — tinted       (grid lines, box borders)
+        lt(0.65),      # C_SUBTITLE — light on dark header
+    )
+
+
 # ── service roll-number generator ─────────────────────────────────────────────
 
 _service_counters: dict[str, int] = defaultdict(int)
@@ -233,6 +272,7 @@ def generate_service_bill(
     gst_percent: float = 0.0,
     advance: float = 0.0,
     lang: str = "en",
+    theme_color: str = "#E91E63",
     # backward-compat alias
     bill_number: str = "",
 ) -> str:
@@ -266,16 +306,12 @@ def generate_service_bill(
     balance_due = net_amount - advance
 
     # ── Colors ────────────────────────────────────────────────────────────────
-    C_DK_GREEN  = colors.HexColor("#1B5E20")
-    C_MD_GREEN  = colors.HexColor("#388E3C")
-    C_LT_GREEN  = colors.HexColor("#E8F5E9")
-    C_STRIPE    = colors.HexColor("#F1F8E9")
-    C_GOLD      = colors.HexColor("#F9A825")
-    C_DARK      = colors.HexColor("#212121")
-    C_MID       = colors.HexColor("#424242")
-    C_GREY      = colors.HexColor("#9E9E9E")
-    C_BORDER    = colors.HexColor("#A5D6A7")
-    C_WHITE     = colors.white
+    (C_DK_GREEN, C_MD_GREEN, C_LT_GREEN,
+     C_STRIPE, C_GOLD, C_BORDER, C_SUBTITLE) = _theme_palette(theme_color)
+    C_DARK  = colors.HexColor("#212121")
+    C_MID   = colors.HexColor("#424242")
+    C_GREY  = colors.HexColor("#9E9E9E")
+    C_WHITE = colors.white
 
     # ── Page setup ────────────────────────────────────────────────────────────
     W, H = A4   # 595.27 x 841.89 pt
@@ -350,7 +386,7 @@ def generate_service_bill(
 
     # Subtitle
     txt(name_center_x, H - 44, "BEAUTY PARLOUR & STYLE CENTRE",
-        font=_FONT, size=9.5, color=colors.HexColor("#A5D6A7"), align="center")
+        font=_FONT, size=9.5, color=C_SUBTITLE, align="center")
 
     y = H - HDR_H - 8
 

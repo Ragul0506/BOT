@@ -374,15 +374,25 @@ _T: dict[str, dict[str, str]] = {
     "setshop_ask_name": {
         "ta": (
             "🏪 <b>Shop Profile Setup</b>\n\n"
-            "Step 1/8: உங்க <b>Shop பெயர்</b> என்ன?\n"
+            "Step 1/10: உங்க <b>Shop பெயர்</b> என்ன?\n"
             "<i>Example: Sri Narpavi Beauty Parlour</i>\n\n"
             "Cancel பண்ண /cancel அனுப்புங்க."
         ),
         "en": (
             "🏪 <b>Shop Profile Setup</b>\n\n"
-            "Step 1/8: What is your <b>shop name</b>?\n"
+            "Step 1/10: What is your <b>shop name</b>?\n"
             "<i>Example: Sri Narpavi Beauty Parlour</i>\n\n"
             "Send /cancel to abort."
+        ),
+    },
+    "setshop_ask_type": {
+        "ta": (
+            "Step 2/10: 🏪 உங்க <b>Shop type</b> என்ன?\n"
+            "கீழே உள்ள button-ஐ tap பண்ணுங்க:"
+        ),
+        "en": (
+            "Step 2/10: 🏪 What <b>type of shop</b> is this?\n"
+            "Tap a button below:"
         ),
     },
     "setshop_name_invalid": {
@@ -391,84 +401,100 @@ _T: dict[str, dict[str, str]] = {
     },
     "setshop_ask_address": {
         "ta": (
-            "Step 2/8: <b>Address</b> என்ன?\n"
+            "Step 3/10: <b>Address</b> என்ன?\n"
             "<i>Example: No. 12, Anna Salai, Chennai - 600002</i>\n"
             "Skip பண்ண <code>skip</code> அனுப்புங்க."
         ),
         "en": (
-            "Step 2/8: What is the <b>shop address</b>?\n"
+            "Step 3/10: What is the <b>shop address</b>?\n"
             "<i>Example: No. 12, Anna Salai, Chennai - 600002</i>\n"
             "Send <code>skip</code> to skip."
         ),
     },
     "setshop_ask_phone": {
         "ta": (
-            "Step 3/8: <b>Phone number</b> என்ன?\n"
+            "Step 4/10: <b>Phone number</b> என்ன?\n"
             "<i>Example: 9876543210</i>\n"
             "Skip பண்ண <code>skip</code> அனுப்புங்க."
         ),
         "en": (
-            "Step 3/8: What is the <b>phone number</b>?\n"
+            "Step 4/10: What is the <b>phone number</b>?\n"
             "<i>Example: 9876543210</i>\n"
             "Send <code>skip</code> to skip."
         ),
     },
     "setshop_ask_gst_pct": {
         "ta": (
-            "Step 4/8: Default <b>GST percentage</b> என்ன? (Optional)\n"
+            "Step 5/10: Default <b>GST percentage</b> என்ன? (Optional)\n"
             "<i>Example: 18 (for 18%)</i>\n"
             "GST இல்லை என்றால் <code>skip</code> அனுப்புங்க."
         ),
         "en": (
-            "Step 4/8: What is the default <b>GST percentage</b>? (Optional)\n"
+            "Step 5/10: What is the default <b>GST percentage</b>? (Optional)\n"
             "<i>Example: 18 (for 18%)</i>\n"
             "Send <code>skip</code> if no GST."
         ),
     },
     "setshop_ask_discount_pct": {
         "ta": (
-            "Step 5/8: Default <b>Discount percentage</b> என்ன? (Optional)\n"
+            "Step 6/10: Default <b>Discount percentage</b> என்ன? (Optional)\n"
             "<i>Example: 5 (for 5% member discount)</i>\n"
             "Discount இல்லை என்றால் <code>skip</code> அனுப்புங்க."
         ),
         "en": (
-            "Step 5/8: What is the default <b>discount percentage</b>? (Optional)\n"
+            "Step 6/10: What is the default <b>discount percentage</b>? (Optional)\n"
             "<i>Example: 5 (for 5% member discount)</i>\n"
             "Send <code>skip</code> if no default discount."
         ),
     },
+    "setshop_ask_theme": {
+        "ta": (
+            "Step 7/10: 🎨 Invoice-ன் <b>Theme Colour</b> என்ன? (hex code)\n"
+            "<i>Example: #E91E63 (Pink), #1B5E20 (Green), #1565C0 (Blue)</i>\n"
+            "Default pink-க்கு <code>/skip</code> அனுப்புங்க."
+        ),
+        "en": (
+            "Step 7/10: 🎨 <b>Theme Colour</b> for invoices (hex code).\n"
+            "<i>Example: #E91E63 (Pink), #1B5E20 (Green), #1565C0 (Blue)</i>\n"
+            "Send <code>/skip</code> for default pink (#E91E63)."
+        ),
+    },
+    "setshop_theme_invalid": {
+        "ta": "❌ Valid hex colour code இல்ல. #RRGGBB format-ல் கொடுங்க (eg. #E91E63). மீண்டும் try பண்ணுங்க.",
+        "en": "❌ Invalid colour. Use #RRGGBB format (e.g. #E91E63). Try again.",
+    },
     "setshop_ask_gst": {
         "ta": (
-            "Step 6/8: <b>GST Registration Number</b> என்ன? (Optional)\n"
+            "Step 8/10: <b>GST Registration Number</b> என்ன? (Optional)\n"
             "<i>Example: 33AABCU9603R1ZM</i>\n"
             "Skip பண்ண <code>skip</code> அனுப்புங்க."
         ),
         "en": (
-            "Step 6/8: What is your <b>GST registration number</b>? (Optional)\n"
+            "Step 8/10: What is your <b>GST registration number</b>? (Optional)\n"
             "<i>Example: 33AABCU9603R1ZM</i>\n"
             "Send <code>skip</code> to skip."
         ),
     },
     "setshop_ask_footer": {
         "ta": (
-            "Step 7/8: Invoice-ல் காட்டணும் <b>Footer message</b> என்ன?\n"
+            "Step 9/10: Invoice-ல் காட்டணும் <b>Footer message</b> என்ன?\n"
             "<i>Example: Thank you for your visit! Please come again.</i>\n"
             "Default பண்ண <code>skip</code> அனுப்புங்க."
         ),
         "en": (
-            "Step 7/8: What <b>footer message</b> should appear on invoices?\n"
+            "Step 9/10: What <b>footer message</b> should appear on invoices?\n"
             "<i>Example: Thank you for your visit! Please come again.</i>\n"
             "Send <code>skip</code> for default."
         ),
     },
     "setshop_ask_logo": {
         "ta": (
-            "✅ கிட்டத்தட்ட முடிஞ்சுடுச்சு! (Step 8/8)\n\n"
+            "✅ கிட்டத்தட்ட முடிஞ்சுடுச்சு! (Step 10/10)\n\n"
             "உங்க shop-ஓட <b>Logo photo</b> அனுப்புங்க (optional).\n"
             "Logo வேண்டாம் என்றால் <code>skip</code> அனுப்புங்க."
         ),
         "en": (
-            "✅ Almost done! (Step 8/8)\n\n"
+            "✅ Almost done! (Step 10/10)\n\n"
             "Send your <b>shop logo</b> as a photo (optional).\n"
             "Send <code>skip</code> if you don't have a logo."
         ),
@@ -641,6 +667,43 @@ _T: dict[str, dict[str, str]] = {
     "servicebill_cancelled": {
         "ta": "❌ Service bill cancel ஆச்சு.",
         "en": "❌ Service bill generation cancelled.",
+    },
+
+    # ── /song command ─────────────────────────────────────────────────────────
+
+    "song_usage": {
+        "ta": (
+            "🎵 <b>Song Downloader</b>\n\n"
+            "Usage: <code>/song &lt;பாடல் பெயர்&gt;</code>\n"
+            "<i>Example: /song Kannana Kanne</i>\n"
+            "<i>Example: /song Vikram movie songs</i>"
+        ),
+        "en": (
+            "🎵 <b>Song Downloader</b>\n\n"
+            "Usage: <code>/song &lt;song name&gt;</code>\n"
+            "<i>Example: /song Kannana Kanne</i>\n"
+            "<i>Example: /song Vikram movie songs</i>"
+        ),
+    },
+    "song_searching": {
+        "ta": "🔍 '<b>{query}</b>' YouTube-ல் தேடுகிறேன்…",
+        "en": "🔍 Searching YouTube for '<b>{query}</b>'…",
+    },
+    "song_results": {
+        "ta": "🎵 '<b>{query}</b>' — results. Download பண்ண ஒரு பாடலை tap பண்ணுங்க:",
+        "en": "🎵 Results for '<b>{query}</b>'. Tap a song to download:",
+    },
+    "song_not_found": {
+        "ta": "❌ '<b>{query}</b>' YouTube-ல் கண்டுபிடிக்கவில்லை. வேற words try பண்ணுங்க.",
+        "en": "❌ No results found for '<b>{query}</b>'. Try different keywords.",
+    },
+    "song_downloading": {
+        "ta": "⬇️ Song download பண்றேன்… கொஞ்சம் wait பண்ணுங்க.",
+        "en": "⬇️ Downloading song… please wait.",
+    },
+    "song_search_fail": {
+        "ta": "😕 YouTube search fail ஆச்சு. கொஞ்சம் நேரம் கழிச்சு மீண்டும் try பண்ணுங்க.",
+        "en": "😕 YouTube search failed. Please try again later.",
     },
 }
 
