@@ -1,9 +1,11 @@
 services:
   - type: web
     name: grocery-telegram-bot
-    env: docker
-    region: frankfurt
+    env: python
+    region: singapore
     plan: free
+    buildCommand: apt-get update -y && apt-get install -y ffmpeg tesseract-ocr tesseract-ocr-tam && pip install -r requirements.txt && python download_fonts.py
+    startCommand: python main.py
     envVars:
       - key: BOT_TOKEN
         sync: false
@@ -25,5 +27,9 @@ services:
         sync: false
       - key: WEBHOOK_SECRET
         sync: false
+      - key: YOUTUBE_API_KEY
+        sync: false
       - key: TZ
         value: Asia/Kolkata
+        sync: false
+    healthCheckPath: /
